@@ -1,6 +1,8 @@
 from datetime import datetime, timedelta
 from faker import Faker
 import random
+from collections import Counter
+from pprint import pprint
 
 random.seed(42)
 Faker.seed(42)
@@ -135,8 +137,136 @@ def generate_customers(num_of_customers=100):
 
     return customers
 
-if __name__ == "__main__":
-    customers = generate_customers(5)
+def generate_contacts(customers):
+    contacts = []
+    contact_counter = 1
 
     for customer in customers:
-        print(customer)
+        customer_id = customer["customer_id"]
+        customer_number = int(customer_id.replace("C", ""))
+
+        mobile_contact = {
+            "contact_id": f"CT{contact_counter:06d}",
+            "customer_id": customer_id,
+            "contact_type": "mobile",
+            "contact_value": f"+96279{customer_number:07d}",
+            "is_primary": True,
+            "created_at": customer["created_at"],
+            "updated_at": customer["updated_at"],
+        }
+
+        contacts.append(mobile_contact)
+        contact_counter += 1
+
+        if random.random() < 0.75:
+            email_contact = {
+                "contact_id": f"CT{contact_counter:06d}",
+                "customer_id": customer_id,
+                "contact_type": "email",
+                "contact_value": f"{customer_id.lower()}@example.com",
+                "is_primary": False,
+                "created_at": customer["created_at"],
+                "updated_at": customer["updated_at"],
+            }
+
+            contacts.append(email_contact)
+            contact_counter += 1
+
+        if random.random() < 0.25:
+            phone_contact = {
+                "contact_id": f"CT{contact_counter:06d}",
+                "customer_id": customer_id,
+                "contact_type": "phone",
+                "contact_value": f"+9626{customer_number:07d}",
+                "is_primary": False,
+                "created_at": customer["created_at"],
+                "updated_at": customer["updated_at"],
+            }
+
+            contacts.append(phone_contact)
+            contact_counter += 1
+
+    return contacts
+
+def generate_customer_status_history(customers):
+    statuses = []
+    status_counter = 1
+
+    for customer in customers:
+        customer_id = customer["customer_id"]
+        created_date = customer["created_at"].date()
+        updated_date = customer["updated_at"].date()
+
+        has_status_change = random.random() < 0.20 and updated_date > created_date
+
+        if has_status_change:
+            days_between = (updated_date - created_date).days
+            change_date = created_date + timedelta(
+                days=random.randint(1, days_between)
+            )
+
+            first_status = {
+                "status_history_id": f"SH{status_counter:06d}",
+                "customer_id": customer_id,
+                "status": "Active",
+                "valid_from": created_date,
+                "valid_to": change_date,
+                "updated_at": customer["updated_at"],
+            }
+
+            statuses.append(first_status)
+            status_counter += 1
+
+            second_status_value = random.choices(
+                ["Dormant", "Suspended", "Closed"],
+                weights=[70, 20, 10],
+                k=1
+            )[0]
+
+            second_status = {
+                "status_history_id": f"SH{status_counter:06d}",
+                "customer_id": customer_id,
+                "status": second_status_value,
+                "valid_from": change_date,
+                "valid_to": None,
+                "updated_at": customer["updated_at"],
+            }
+
+            statuses.append(second_status)
+            status_counter += 1
+
+        else:
+            status = {
+                "status_history_id": f"SH{status_counter:06d}",
+                "customer_id": customer_id,
+                "status": "Active",
+                "valid_from": created_date,
+                "valid_to": None,
+                "updated_at": customer["updated_at"],
+            }
+
+            statuses.append(status)
+            status_counter += 1
+
+    return statuses
+
+def generate_crm_dataset(num_customers=100):
+    segments = generate_segments()
+    customers = generate_customers(num_customers)
+    contacts = generate_contacts(customers)
+    status_history = generate_customer_status_history(customers)
+
+    return {
+        "segments": segments,
+        "customers": customers,
+        "contacts": contacts,
+        "status_history": status_history,
+    }    
+
+if __name__ == "__main__":
+    crm_data = generate_crm_dataset(100)
+
+    print(f"Segments: {len(crm_data['segments'])}")
+    print(f"Customers: {len(crm_data['customers'])}")
+    print(f"Contacts: {len(crm_data['contacts'])}")
+    print(f"Status history: {len(crm_data['status_history'])}")
