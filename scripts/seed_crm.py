@@ -1,5 +1,5 @@
-from generate_crm_data import generate_crm_dataset
-from test_connections import get_crm_connection
+from scripts.generate_crm_data import generate_crm_dataset
+from src.connectors.mysql_connector import get_crm_connection
 
 def seed_crm_segments(cursor, segments):
     for segment in segments:
