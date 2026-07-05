@@ -38,6 +38,7 @@ CREATE TABLE IF NOT EXISTS core_transactions (
     account_id VARCHAR(20) NOT NULL,
     transaction_timestamp TIMESTAMP NOT NULL,
     transaction_type VARCHAR(50) NOT NULL,
+    transaction_direction VARCHAR(10) NOT NULL,
     amount DECIMAL(18, 3) NOT NULL,
     currency VARCHAR(10) NOT NULL,
     channel VARCHAR(50) NOT NULL,
