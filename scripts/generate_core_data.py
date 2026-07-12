@@ -1192,7 +1192,7 @@ def generate_accounts(customers, branches, products):
 
     Account creation happens during bank business time.
     Product selection is done without replacement, so a customer cannot receive
-    the same product more than once.
+    the same product more than once. 
     """
     accounts = []
     account_counter = 1
