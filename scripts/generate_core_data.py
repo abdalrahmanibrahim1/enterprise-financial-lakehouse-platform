@@ -1037,7 +1037,7 @@ def generate_opening_balance(segment_id, product_id):
     if (
         product_id in LOAN_LIKE_PRODUCTS
         or product_id in CREDIT_CARD_PRODUCTS
-        or product_id == SALARY_LIKE_PRODUCTS
+        or product_id in SALARY_LIKE_PRODUCTS
     ):
         return Decimal("0.000")
     
@@ -3626,6 +3626,307 @@ def audit_deposit_like_accounts(accounts, transactions, max_accounts=10):
         if len(account_transactions) > 40:
             print(f"... {len(account_transactions) - 40} more transactions")
 
+def audit_accounts(accounts, customers, branches, products, max_errors=50):
+    """Audit generated account records before transaction generation."""
+
+    print("#" * 120)
+    print("ACCOUNT AUDIT")
+    print("#" * 120)
+
+    valid_statuses = {"Active", "Dormant", "Closed", "Blocked"}
+
+    customer_by_id = {
+        customer["customer_id"]: customer
+        for customer in customers
+    }
+
+    branch_ids = {
+        branch["branch_id"]
+        for branch in branches
+    }
+
+    product_ids = {
+        product["product_id"]
+        for product in products
+    }
+
+    max_datetime = MAX_UPDATE_DATE.replace(
+        hour=23,
+        minute=59,
+        second=59
+    )
+
+    seen_account_ids = set()
+    products_by_customer = {}
+
+    errors = []
+
+    account_count = len(accounts)
+
+    duplicate_account_ids = 0
+    invalid_customer_ids = 0
+    invalid_branch_ids = 0
+    invalid_product_ids = 0
+    duplicate_customer_products = 0
+    invalid_statuses = 0
+    invalid_currencies = 0
+    invalid_product_segment_pairs = 0
+    invalid_created_dates = 0
+    invalid_open_dates = 0
+    invalid_activity_windows = 0
+    invalid_opening_balances = 0
+    invalid_current_balances = 0
+
+    status_counts = {}
+    product_counts = {}
+    segment_counts = {}
+
+    for account in accounts:
+        account_id = account["account_id"]
+        customer_id = account["customer_id"]
+        branch_id = account["branch_id"]
+        product_id = account["product_id"]
+        account_status = account["account_status"]
+        currency = account["currency"]
+        created_at = account["created_at"]
+        account_open_date = account["account_open_date"]
+        activity_start_date = account["_activity_start_date"]
+        activity_end_date = account["_activity_end_date"]
+
+        opening_balance = Decimal(str(account["_opening_balance"])).quantize(
+            MONEY_PRECISION
+        )
+
+        current_balance = Decimal(str(account["current_balance"])).quantize(
+            MONEY_PRECISION
+        )
+
+        status_counts[account_status] = status_counts.get(account_status, 0) + 1
+        product_counts[product_id] = product_counts.get(product_id, 0) + 1
+
+        # ------------------------------------------------------------------
+        # Primary key uniqueness
+        # ------------------------------------------------------------------
+        if account_id in seen_account_ids:
+            duplicate_account_ids += 1
+            errors.append(f"{account_id}: duplicate account_id")
+        else:
+            seen_account_ids.add(account_id)
+
+        # ------------------------------------------------------------------
+        # Foreign key checks
+        # ------------------------------------------------------------------
+        customer = customer_by_id.get(customer_id)
+
+        if customer is None:
+            invalid_customer_ids += 1
+            errors.append(f"{account_id}: invalid customer_id {customer_id}")
+            continue
+
+        segment_id = customer["segment_id"]
+        customer_created_at = customer["created_at"]
+
+        segment_counts[segment_id] = segment_counts.get(segment_id, 0) + 1
+
+        if branch_id not in branch_ids:
+            invalid_branch_ids += 1
+            errors.append(f"{account_id}: invalid branch_id {branch_id}")
+
+        if product_id not in product_ids:
+            invalid_product_ids += 1
+            errors.append(f"{account_id}: invalid product_id {product_id}")
+            continue
+
+        # ------------------------------------------------------------------
+        # One product per customer check
+        # ------------------------------------------------------------------
+        customer_products = products_by_customer.setdefault(customer_id, set())
+
+        if product_id in customer_products:
+            duplicate_customer_products += 1
+            errors.append(
+                f"{account_id}: customer {customer_id} received duplicate product {product_id}"
+            )
+        else:
+            customer_products.add(product_id)
+
+        # ------------------------------------------------------------------
+        # Status and product eligibility checks
+        # ------------------------------------------------------------------
+        if account_status not in valid_statuses:
+            invalid_statuses += 1
+            errors.append(f"{account_id}: invalid account_status {account_status}")
+
+        product_weight = PRODUCT_WEIGHTS_BY_SEGMENT[segment_id].get(product_id)
+
+        if product_weight is None or product_weight <= 0:
+            invalid_product_segment_pairs += 1
+            errors.append(
+                f"{account_id}: product {product_id} is not eligible for segment {segment_id}"
+            )
+
+        # ------------------------------------------------------------------
+        # Currency check
+        # ------------------------------------------------------------------
+        allowed_currencies = CURRENCY_RULES[segment_id]["currencies"]
+
+        if currency not in allowed_currencies:
+            invalid_currencies += 1
+            errors.append(
+                f"{account_id}: currency {currency} is not allowed for segment {segment_id}"
+            )
+
+        # ------------------------------------------------------------------
+        # Created/open date checks
+        # ------------------------------------------------------------------
+        if created_at < customer_created_at:
+            invalid_created_dates += 1
+            errors.append(
+                f"{account_id}: account created_at is before customer created_at"
+            )
+
+        if created_at > max_datetime:
+            invalid_created_dates += 1
+            errors.append(
+                f"{account_id}: account created_at is after MAX_UPDATE_DATE"
+            )
+
+        if account_open_date != created_at.date():
+            invalid_open_dates += 1
+            errors.append(
+                f"{account_id}: account_open_date does not match created_at.date()"
+            )
+
+        # ------------------------------------------------------------------
+        # Activity window checks
+        # ------------------------------------------------------------------
+        if activity_start_date < created_at:
+            invalid_activity_windows += 1
+            errors.append(
+                f"{account_id}: activity_start_date is before account created_at"
+            )
+
+        if activity_end_date < activity_start_date:
+            invalid_activity_windows += 1
+            errors.append(
+                f"{account_id}: activity_end_date is before activity_start_date"
+            )
+
+        if activity_end_date > max_datetime:
+            invalid_activity_windows += 1
+            errors.append(
+                f"{account_id}: activity_end_date is after MAX_UPDATE_DATE"
+            )
+
+        if account_status == "Active" and activity_end_date != max_datetime:
+            invalid_activity_windows += 1
+            errors.append(
+                f"{account_id}: Active account does not end at MAX_UPDATE_DATE"
+            )
+
+        if account_status != "Active" and activity_end_date > max_datetime:
+            invalid_activity_windows += 1
+            errors.append(
+                f"{account_id}: non-active account ends after MAX_UPDATE_DATE"
+            )
+
+        # ------------------------------------------------------------------
+        # Opening balance rules
+        # ------------------------------------------------------------------
+        if product_id in LOAN_LIKE_PRODUCTS:
+            if opening_balance != Decimal("0.000"):
+                invalid_opening_balances += 1
+                errors.append(
+                    f"{account_id}: loan-like product has non-zero opening balance"
+                )
+
+        elif product_id in CREDIT_CARD_PRODUCTS:
+            if opening_balance != Decimal("0.000"):
+                invalid_opening_balances += 1
+                errors.append(
+                    f"{account_id}: credit card product has non-zero opening balance"
+                )
+
+        elif product_id == "PRD003":
+            if opening_balance != Decimal("0.000"):
+                invalid_opening_balances += 1
+                errors.append(
+                    f"{account_id}: salary account has non-zero opening balance"
+                )
+
+        elif product_id in DEPOSIT_LIKE_PRODUCTS:
+            min_balance, max_balance = BALANCE_LIMIT_RULES[segment_id][product_id]
+
+            min_balance = Decimal(str(min_balance)).quantize(MONEY_PRECISION)
+            max_balance = Decimal(str(max_balance)).quantize(MONEY_PRECISION)
+
+            if opening_balance < min_balance or opening_balance > max_balance:
+                invalid_opening_balances += 1
+                errors.append(
+                    f"{account_id}: deposit opening balance {opening_balance} "
+                    f"is outside allowed range {min_balance}-{max_balance}"
+                )
+
+        # ------------------------------------------------------------------
+        # Current balance pre-transaction check
+        # ------------------------------------------------------------------
+        if current_balance != opening_balance:
+            invalid_current_balances += 1
+            errors.append(
+                f"{account_id}: current_balance does not match _opening_balance before transactions"
+            )
+
+    print(f"Total Accounts: {account_count}")
+    print(f"Unique Account IDs: {len(seen_account_ids)}")
+    print()
+
+    print("Status Counts:")
+    for status, count in sorted(status_counts.items()):
+        print(f"  {status}: {count}")
+
+    print()
+
+    print("Product Counts:")
+    for product_id, count in sorted(product_counts.items()):
+        print(f"  {product_id}: {count}")
+
+    print()
+
+    print("Segment Counts:")
+    for segment_id, count in sorted(segment_counts.items()):
+        print(f"  {segment_id}: {count}")
+
+    print()
+
+    print("Validation Summary:")
+    print(f"  Duplicate Account IDs: {duplicate_account_ids}")
+    print(f"  Invalid Customer IDs: {invalid_customer_ids}")
+    print(f"  Invalid Branch IDs: {invalid_branch_ids}")
+    print(f"  Invalid Product IDs: {invalid_product_ids}")
+    print(f"  Duplicate Customer Products: {duplicate_customer_products}")
+    print(f"  Invalid Statuses: {invalid_statuses}")
+    print(f"  Invalid Currencies: {invalid_currencies}")
+    print(f"  Invalid Product-Segment Pairs: {invalid_product_segment_pairs}")
+    print(f"  Invalid Created Dates: {invalid_created_dates}")
+    print(f"  Invalid Open Dates: {invalid_open_dates}")
+    print(f"  Invalid Activity Windows: {invalid_activity_windows}")
+    print(f"  Invalid Opening Balances: {invalid_opening_balances}")
+    print(f"  Invalid Current Balances: {invalid_current_balances}")
+
+    print()
+
+    if errors:
+        print("Errors:")
+        for error in errors[:max_errors]:
+            print(f"  - {error}")
+
+        if len(errors) > max_errors:
+            print(f"  ... {len(errors) - max_errors} more errors")
+    else:
+        print("No account errors found.")
+
+    print("#" * 120)
+
 if __name__ == "__main__":
     from scripts.generate_crm_data import generate_crm_dataset
 
@@ -3640,20 +3941,9 @@ if __name__ == "__main__":
         products
     )
 
-    transactions = generate_transactions(
+    audit_accounts(
         accounts,
-        crm_dataset["customers"]
-    )
-
-    update_accounts_from_transactions(accounts, transactions)
-
-    closed_deposit_accounts = [
-        account for account in accounts
-        if account["product_id"] in DEPOSIT_LIKE_PRODUCTS
-        and account["account_status"] == "Closed"
-    ]
-
-    audit_deposit_like_accounts(
-        closed_deposit_accounts,
-        transactions
+        crm_dataset["customers"],
+        branches,
+        products
     )
