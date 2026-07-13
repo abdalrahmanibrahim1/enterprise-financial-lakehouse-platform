@@ -620,6 +620,13 @@ SALARY_SPENDING_TYPES = [
     {"transaction_type": "Transfer Out", "direction": "Debit", "weight": 20},
 ]
 
+SALARY_DAY_OPTIONS = [24, 25, 26, 27, 28, 30]
+
+SALARY_MONTHLY_TRANSACTION_COUNT_RULES = {
+    "SEG001": (12, 35),
+    "SEG002": (18, 50),
+    "SEG005": (20, 70),
+}
 
 # ============================================================
 # Reference data generators
@@ -2314,38 +2321,6 @@ def generate_total_salary_spending_amount(monthly_salary, segment_id):
 
     return spending_amount
 
-def generate_salary_spending_amount(monthly_salary, transaction_type):
-    max_ratios = {
-        "POS Purchase": Decimal("0.08"),
-        "ATM Withdrawal": Decimal("0.15"),
-        "Bill Payment": Decimal("0.25"),
-        "Transfer Out": Decimal("0.35"),
-        "Fee": Decimal("0.01"),
-    }
-
-    min_amounts = {
-        "POS Purchase": Decimal("2.000"),
-        "ATM Withdrawal": Decimal("10.000"),
-        "Bill Payment": Decimal("10.000"),
-        "Transfer Out": Decimal("10.000"),
-        "Fee": Decimal("1.000"),
-    }
-
-    min_amount = min_amounts[transaction_type]
-    max_amount = monthly_salary * max_ratios[transaction_type]
-
-    if max_amount < min_amount:
-        max_amount = min_amount
-
-    amount_in_thousandths = random.randint(
-        int(min_amount * 1000),
-        int(max_amount * 1000)
-    )
-
-    return (Decimal(amount_in_thousandths) / Decimal("1000")).quantize(
-        Decimal("0.001")
-    )
-
 
 # ============================================================
 # Salary account transaction generator
@@ -2353,31 +2328,38 @@ def generate_salary_spending_amount(monthly_salary, transaction_type):
 
 
 def generate_salary_account_transactions(account, segment_id, starting_transaction_counter):
+    """Generate salary credits and spending activity for salary accounts.
+
+    Salary accounts receive one recurring monthly salary credit on a stable
+    salary day. After each salary credit, the account generates spending
+    transactions until the next salary cycle or until activity_end_date.
+
+    Spending is scaled down for partial final months so accounts do not create
+    a full month of activity in a shortened activity window. Closed salary
+    accounts transfer out any remaining balance at activity_end_date.
+    """
     salary_transactions = []
 
     if segment_id not in SALARY_AMOUNT_RULES:
         raise ValueError(
             f"Salary account generated for invalid segment: {segment_id}"
         )
-    
+
     monthly_salary = choose_monthly_salary(segment_id)
     account["_monthly_salary"] = monthly_salary
 
-    available_balance = generate_opening_balance(segment_id, account["product_id"])
+    available_balance = generate_opening_balance(
+        segment_id,
+        account["product_id"]
+    )
 
-    SALARY_DAY_OPTIONS = [24, 25, 26, 27, 28, 30]
-
-    SALARY_MONTHLY_TRANSACTION_COUNT_RULES = {
-        "SEG001": (12, 35),
-        "SEG002": (18, 50),
-        "SEG005": (20, 70),
-    }
-    
     schedule_start_date = account["_activity_start_date"]
     schedule_end_date = account["_activity_end_date"]
 
+    # Salary accounts use a stable monthly salary day, similar to payroll.
     salary_day = random.choice(SALARY_DAY_OPTIONS)
 
+    # Use calendar-month salary cycles anchored to the account activity month.
     current_salary_cycle = schedule_start_date.replace(
         day=1,
         hour=0,
@@ -2403,13 +2385,16 @@ def generate_salary_account_transactions(account, segment_id, starting_transacti
             microsecond=0
         )
 
+        # Skip months where the salary date falls outside the account's
+        # activity window.
         if schedule_start_date <= salary_date <= schedule_end_date:
-            salary_timestamp = assign_random_business_time(
+            salary_timestamp = assign_bank_business_time(
                 salary_date,
                 earliest_allowed=schedule_start_date,
                 latest_allowed=schedule_end_date
             )
 
+            # Monthly salary credit increases the available account balance.
             transaction = {
                 "transaction_id": f"TR{starting_transaction_counter:06d}",
                 "account_id": account["account_id"],
@@ -2423,25 +2408,15 @@ def generate_salary_account_transactions(account, segment_id, starting_transacti
                 "created_at": generate_created_at(salary_timestamp),
             }
 
-            starting_transaction_counter+=1
             salary_transactions.append(transaction)
+            starting_transaction_counter += 1
+
             running_balance = (
                 running_balance + monthly_salary
-            ).quantize(Decimal("0.001"))
+            ).quantize(MONEY_PRECISION)
 
-            monthly_spending_budget = generate_total_salary_spending_amount(
-                monthly_salary,
-                segment_id
-            )
-
-            monthly_spending_budget = min(
-                monthly_spending_budget,
-                running_balance
-            ).quantize(Decimal("0.001"))
-
-            min_count, max_count = SALARY_MONTHLY_TRANSACTION_COUNT_RULES[segment_id]
-            transaction_count = random.randint(min_count, max_count)
-
+            # Build the next salary date so spending can be generated between
+            # this salary credit and the next one.
             next_salary_cycle = add_one_month(current_salary_cycle)
 
             next_salary_month_day = get_valid_month_day(
@@ -2459,9 +2434,10 @@ def generate_salary_account_transactions(account, segment_id, starting_transacti
             )
 
             spending_window_start = salary_timestamp + timedelta(seconds=1)
-
             normal_spending_window_end = next_salary_date - timedelta(seconds=1)
 
+            # The final account activity window may end before the next salary
+            # date, so spending must stop at activity_end_date.
             spending_window_end = min(
                 normal_spending_window_end,
                 schedule_end_date
@@ -2478,10 +2454,13 @@ def generate_salary_account_transactions(account, segment_id, starting_transacti
             if actual_window_seconds <= 0 or full_window_seconds <= 0:
                 current_salary_cycle = add_one_month(current_salary_cycle)
                 continue
-                
+
+            # Scale spending down for shortened cycles. Example: if only half
+            # the normal spending window remains, generate roughly half the
+            # spending budget and half the transaction count.
             window_ratio = (
                 Decimal(actual_window_seconds) / Decimal(full_window_seconds)
-            ).quantize(Decimal("0.001"))
+            ).quantize(MONEY_PRECISION)
 
             window_ratio = min(window_ratio, Decimal("1.000"))
 
@@ -2492,12 +2471,13 @@ def generate_salary_account_transactions(account, segment_id, starting_transacti
 
             monthly_spending_budget = (
                 full_month_spending_budget * window_ratio
-            ).quantize(Decimal("0.001"))
+            ).quantize(MONEY_PRECISION)
 
+            # Salary accounts cannot spend more than their available balance.
             monthly_spending_budget = min(
                 monthly_spending_budget,
                 running_balance
-            ).quantize(Decimal("0.001"))
+            ).quantize(MONEY_PRECISION)
 
             min_count, max_count = SALARY_MONTHLY_TRANSACTION_COUNT_RULES[segment_id]
 
@@ -2509,7 +2489,9 @@ def generate_salary_account_transactions(account, segment_id, starting_transacti
 
             transaction_count = max(1, transaction_count)
 
-            for _ in range(transaction_count):
+            # Generate salary-funded spending transactions after the salary
+            # credit and before the next salary cycle.
+            for transaction_index in range(transaction_count):
                 if monthly_spending_budget <= 0 or running_balance <= 0:
                     break
 
@@ -2528,23 +2510,27 @@ def generate_salary_account_transactions(account, segment_id, starting_transacti
                     k=1
                 )[0]
 
-                remaining_transactions = transaction_count - _
+                # Spread the remaining monthly budget across the remaining
+                # transactions, then randomize each amount around that average.
+                remaining_transactions = transaction_count - transaction_index
 
                 average_transaction_amount = (
                     monthly_spending_budget / Decimal(remaining_transactions)
-                ).quantize(Decimal("0.001"))
+                ).quantize(MONEY_PRECISION)
 
                 amount_multiplier = Decimal(str(random.uniform(0.50, 1.75)))
 
                 transaction_amount = (
                     average_transaction_amount * amount_multiplier
-                ).quantize(Decimal("0.001"))
+                ).quantize(MONEY_PRECISION)
 
+                # Final cap protects both the monthly budget and the account
+                # balance from going negative.
                 transaction_amount = min(
                     transaction_amount,
                     monthly_spending_budget,
                     running_balance
-                ).quantize(Decimal("0.001"))
+                ).quantize(MONEY_PRECISION)
 
                 if transaction_amount <= 0:
                     break
@@ -2558,7 +2544,9 @@ def generate_salary_account_transactions(account, segment_id, starting_transacti
                     "amount": transaction_amount,
                     "currency": account["currency"],
                     "channel": choose_channel(transaction_chosen["transaction_type"]),
-                    "merchant_category": choose_merchant_category(transaction_chosen["transaction_type"]),
+                    "merchant_category": choose_merchant_category(
+                        transaction_chosen["transaction_type"]
+                    ),
                     "created_at": generate_created_at(transaction_timestamp),
                 }
 
@@ -2567,16 +2555,19 @@ def generate_salary_account_transactions(account, segment_id, starting_transacti
 
                 running_balance = (
                     running_balance - transaction_amount
-                ).quantize(Decimal("0.001"))
+                ).quantize(MONEY_PRECISION)
 
                 monthly_spending_budget = (
                     monthly_spending_budget - transaction_amount
-                ).quantize(Decimal("0.001"))
+                ).quantize(MONEY_PRECISION)
 
+        # Move to the next calendar-month salary cycle.
         current_salary_cycle = add_one_month(current_salary_cycle)
-    
+
+    # Closed salary accounts must end at zero, so any remaining balance is
+    # transferred out at the activity end timestamp.
     if account["account_status"] == "Closed" and running_balance > 0:
-        closure_amount = running_balance.quantize(Decimal("0.001"))
+        closure_amount = running_balance.quantize(MONEY_PRECISION)
 
         closure_transaction = {
             "transaction_id": f"TR{starting_transaction_counter:06d}",
@@ -2596,7 +2587,7 @@ def generate_salary_account_transactions(account, segment_id, starting_transacti
 
         running_balance = Decimal("0.000")
 
-    account["current_balance"] = running_balance.quantize(Decimal("0.001"))
+    account["current_balance"] = running_balance.quantize(MONEY_PRECISION)
 
     return salary_transactions, starting_transaction_counter
 
@@ -3991,4 +3982,4 @@ if __name__ == "__main__":
     transactions = generate_transactions(accounts, crm_dataset["customers"])
 
     update_accounts_from_transactions(accounts, transactions)
-    print_credit_card_audit(accounts, transactions, crm_dataset["customers"])
+    print_salary_account_audit(accounts, transactions, crm_dataset["customers"])
