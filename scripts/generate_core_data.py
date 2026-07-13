@@ -1762,6 +1762,7 @@ def generate_loan_like_transactions(account, segment_id, starting_transaction_co
 
 
 def choose_credit_card_limit(segment_id):
+    """Choose a segment-based credit limit for a credit card account."""
     min_limit, max_limit = CREDIT_CARD_LIMIT_RULES[segment_id]
 
     amount_in_thousandths = random.randint(
@@ -1774,6 +1775,7 @@ def choose_credit_card_limit(segment_id):
     )
 
 def generate_card_purchase_amount(credit_limit):
+    """Generate a card purchase amount capped as a percentage of credit limit."""
     max_purchase = credit_limit * Decimal("0.12")
 
     if max_purchase < Decimal("5.000"):
@@ -1789,6 +1791,7 @@ def generate_card_purchase_amount(credit_limit):
     )
 
 def generate_cash_advance_amount(credit_limit):
+    """Generate a cash advance amount capped relative to the credit limit."""
     max_advance = max(Decimal("20.000"), credit_limit * Decimal("0.20"))
 
     amount_in_thousandths = random.randint(
@@ -1801,6 +1804,12 @@ def generate_cash_advance_amount(credit_limit):
     )
 
 def calculate_minimum_card_payment(statement_balance, segment_id):
+    """Calculate the minimum required payment for a card statement.
+
+    The minimum payment is the larger of a fixed segment minimum and a
+    percentage of the statement balance, but it never exceeds the full
+    statement balance.
+    """
     rule = CARD_MINIMUM_PAYMENT_RULES[segment_id]
 
     minimum_payment = max(
@@ -1814,12 +1823,14 @@ def calculate_minimum_card_payment(statement_balance, segment_id):
     ).quantize(Decimal("0.001"))
 
 def generate_card_late_fee_amount(segment_id):
+    """Generate a segment-based late fee amount."""
     min_fee, max_fee = CARD_LATE_FEE_RULES[segment_id]
     fee = Decimal(random.randint(min_fee, max_fee)).quantize(Decimal("0.001"))
 
     return fee
 
 def calculate_card_interest_charge(unpaid_statement_balance, segment_id):
+    """Calculate monthly interest on the unpaid statement balance."""
     if unpaid_statement_balance <= 0:
         return Decimal("0.000")
 
@@ -1832,6 +1843,7 @@ def calculate_card_interest_charge(unpaid_statement_balance, segment_id):
     return interest
 
 def calculate_cash_advance_fee(cash_advance_amount, segment_id):
+    """Calculate the fee charged for a cash advance transaction."""
     rule = CARD_CASH_ADVANCE_FEE_RULES[segment_id]
 
     fee = max(
@@ -1848,6 +1860,17 @@ def calculate_cash_advance_fee(cash_advance_amount, segment_id):
 
 
 def generate_credit_card_transactions(account, segment_id, starting_transaction_counter):
+    """Generate credit card purchases, cash advances, payments, fees, and interest.
+
+    Credit card accounts use an internal positive outstanding balance:
+    purchases, cash advances, fees, and interest increase the outstanding
+    balance, while card payments reduce it.
+
+    This generator uses simplified monthly card cycles. Purchases happen before
+    the payment point inside the same cycle, then the customer pays according to
+    segment-level payment behavior. Closed card accounts are settled to zero at
+    activity_end_date.
+    """
     card_transactions = []
 
     schedule_start_date = account["_activity_start_date"]
@@ -1858,18 +1881,48 @@ def generate_credit_card_transactions(account, segment_id, starting_transaction_
 
     outstanding_balance = Decimal("0.000")
 
+    # Use calendar-month card cycles anchored to the account activity start day.
+    cycle_day = schedule_start_date.day
+
+    current_cycle_month = schedule_start_date.replace(
+        day=1,
+        hour=0,
+        minute=0,
+        second=0,
+        microsecond=0
+    )
+
     current_cycle_date = schedule_start_date
 
     while current_cycle_date <= schedule_end_date:
         cycle_start_date = current_cycle_date
 
-        cycle_end_date = min(
-          cycle_start_date + timedelta(days = 30),
-          schedule_end_date  
-        ) 
+        next_cycle_month = add_one_month(current_cycle_month)
 
+        next_cycle_day = get_valid_month_day(
+            next_cycle_month.year,
+            next_cycle_month.month,
+            cycle_day
+        )
+
+        next_cycle_start_date = next_cycle_month.replace(
+            day=next_cycle_day,
+            hour=schedule_start_date.hour,
+            minute=schedule_start_date.minute,
+            second=schedule_start_date.second,
+            microsecond=0
+        )
+
+        cycle_end_date = min(
+            next_cycle_start_date - timedelta(seconds=1),
+            schedule_end_date
+        )
+
+        # Simplified payment model:
+        # the customer pays near the end of the same card cycle instead of
+        # carrying a separate statement balance into the next cycle.
         payment_date = min(
-            cycle_start_date + timedelta(days= random.randint(20,30)),
+            cycle_start_date + timedelta(days=random.randint(20, 30)),
             cycle_end_date
         )
 
@@ -1879,8 +1932,11 @@ def generate_credit_card_transactions(account, segment_id, starting_transaction_
             latest_allowed=cycle_end_date
         )
 
+        # In the final cycle of a closed card, skip the normal payment logic.
+        # Purchases may happen until activity_end_date, then the card is settled.
         is_final_closed_cycle = (
-            account["account_status"] == "Closed" and cycle_end_date == schedule_end_date
+            account["account_status"] == "Closed"
+            and cycle_end_date == schedule_end_date
         )
 
         purchase_cutoff_timestamp = payment_timestamp
@@ -1892,7 +1948,11 @@ def generate_credit_card_transactions(account, segment_id, starting_transaction_
             (purchase_cutoff_timestamp - cycle_start_date).total_seconds()
         )
 
-        cycle_days = max(1, (cycle_end_date - cycle_start_date).days + 1)
+        # Short partial cycles receive fewer purchases than full monthly cycles.
+        cycle_days = max(
+            1,
+            (cycle_end_date - cycle_start_date).days + 1
+        )
 
         if cycle_days < 7:
             purchase_count = random.randint(0, 3)
@@ -1901,26 +1961,27 @@ def generate_credit_card_transactions(account, segment_id, starting_transaction_
         else:
             purchase_count = random.randint(3, 12)
 
+        # Generate normal card purchases while respecting the credit limit.
         for _ in range(purchase_count):
             if purchase_window_seconds <= 0:
                 break
-            
+
             if outstanding_balance >= credit_limit:
                 break
 
             available_credit = (
                 credit_limit - outstanding_balance
-            ).quantize(Decimal("0.001"))
+            ).quantize(MONEY_PRECISION)
 
             if available_credit <= 0:
                 break
 
             purchase_amount = generate_card_purchase_amount(credit_limit)
 
-            if purchase_amount > available_credit:
-                purchase_amount = available_credit
-
-            purchase_amount = purchase_amount.quantize(Decimal("0.001"))
+            purchase_amount = min(
+                purchase_amount,
+                available_credit
+            ).quantize(MONEY_PRECISION)
 
             purchase_timestamp = cycle_start_date + timedelta(
                 seconds=random.randint(0, purchase_window_seconds)
@@ -1944,12 +2005,15 @@ def generate_credit_card_transactions(account, segment_id, starting_transaction_
 
             outstanding_balance = (
                 outstanding_balance + purchase_amount
-            ).quantize(Decimal("0.001"))
+            ).quantize(MONEY_PRECISION)
 
         available_credit = (
             credit_limit - outstanding_balance
-        ).quantize(Decimal("0.001"))
+        ).quantize(MONEY_PRECISION)
 
+        # Cash advances are optional card activity. If generated, they increase
+        # the outstanding balance and immediately create a cash advance fee when
+        # enough credit remains.
         if (
             purchase_window_seconds > 0
             and available_credit > 0
@@ -1960,7 +2024,7 @@ def generate_credit_card_transactions(account, segment_id, starting_transaction_
             cash_advance_amount = min(
                 cash_advance_amount,
                 available_credit
-            ).quantize(Decimal("0.001"))
+            ).quantize(MONEY_PRECISION)
 
             cash_advance_timestamp = cycle_start_date + timedelta(
                 seconds=random.randint(0, purchase_window_seconds)
@@ -1984,7 +2048,7 @@ def generate_credit_card_transactions(account, segment_id, starting_transaction_
 
             outstanding_balance = (
                 outstanding_balance + cash_advance_amount
-            ).quantize(Decimal("0.001"))
+            ).quantize(MONEY_PRECISION)
 
             cash_advance_fee_amount = calculate_cash_advance_fee(
                 cash_advance_amount,
@@ -1993,12 +2057,12 @@ def generate_credit_card_transactions(account, segment_id, starting_transaction_
 
             available_credit = (
                 credit_limit - outstanding_balance
-            ).quantize(Decimal("0.001"))
+            ).quantize(MONEY_PRECISION)
 
             cash_advance_fee_amount = min(
                 cash_advance_fee_amount,
                 available_credit
-            ).quantize(Decimal("0.001"))
+            ).quantize(MONEY_PRECISION)
 
             if cash_advance_fee_amount > 0:
                 transaction = {
@@ -2009,7 +2073,7 @@ def generate_credit_card_transactions(account, segment_id, starting_transaction_
                     "transaction_direction": "Debit",
                     "amount": cash_advance_fee_amount,
                     "currency": account["currency"],
-                    "channel": "System",
+                    "channel": choose_channel("Cash Advance Fee"),
                     "merchant_category": None,
                     "created_at": generate_created_at(cash_advance_timestamp),
                 }
@@ -2019,13 +2083,17 @@ def generate_credit_card_transactions(account, segment_id, starting_transaction_
 
                 outstanding_balance = (
                     outstanding_balance + cash_advance_fee_amount
-                ).quantize(Decimal("0.001"))
+                ).quantize(MONEY_PRECISION)
 
-
+        # Calculate this cycle's statement balance and generate customer payment
+        # behavior: full payment, minimum payment, partial payment, or underpayment.
         if outstanding_balance > 0 and not is_final_closed_cycle:
             statement_balance = outstanding_balance
 
-            minimum_due = calculate_minimum_card_payment(statement_balance, segment_id)
+            minimum_due = calculate_minimum_card_payment(
+                statement_balance,
+                segment_id
+            )
 
             behavior_rule = CARD_PAYMENT_BEHAVIOR_RULES[segment_id]
 
@@ -2055,7 +2123,7 @@ def generate_credit_card_transactions(account, segment_id, starting_transaction_
                 payment_ratio = Decimal(str(random.uniform(0.00, 0.90)))
                 payment_amount = minimum_due * payment_ratio
 
-            payment_amount = payment_amount.quantize(Decimal("0.001"))
+            payment_amount = payment_amount.quantize(MONEY_PRECISION)
 
             is_payment_date_late = (
                 random.random()
@@ -2080,22 +2148,24 @@ def generate_credit_card_transactions(account, segment_id, starting_transaction_
             if is_payment_date_late:
                 actual_payment_timestamp = min(
                     due_timestamp + timedelta(days=random.randint(1, 7)),
-                    schedule_end_date
+                    cycle_end_date
                 )
             else:
                 actual_payment_timestamp = due_timestamp
 
+            # Late fees are charged when the payment is late or when the
+            # customer pays less than the required minimum.
             if should_charge_late_fee:
                 late_fee_amount = generate_card_late_fee_amount(segment_id)
 
                 available_credit = (
                     credit_limit - outstanding_balance
-                ).quantize(Decimal("0.001"))
+                ).quantize(MONEY_PRECISION)
 
                 late_fee_amount = min(
                     late_fee_amount,
                     available_credit
-                ).quantize(Decimal("0.001"))
+                ).quantize(MONEY_PRECISION)
 
                 if late_fee_amount > 0:
                     transaction = {
@@ -2116,8 +2186,9 @@ def generate_credit_card_transactions(account, segment_id, starting_transaction_
 
                     outstanding_balance = (
                         outstanding_balance + late_fee_amount
-                    ).quantize(Decimal("0.001"))
+                    ).quantize(MONEY_PRECISION)
 
+            # Customer payment reduces the outstanding balance.
             if payment_amount > 0:
                 transaction = {
                     "transaction_id": f"TR{starting_transaction_counter:06d}",
@@ -2137,12 +2208,14 @@ def generate_credit_card_transactions(account, segment_id, starting_transaction_
 
                 outstanding_balance = (
                     outstanding_balance - payment_amount
-                ).quantize(Decimal("0.001"))
+                ).quantize(MONEY_PRECISION)
 
+            # Interest is charged when the customer does not pay the full
+            # statement balance.
             if should_charge_interest:
                 unpaid_statement_balance = (
                     statement_balance - payment_amount
-                ).quantize(Decimal("0.001"))
+                ).quantize(MONEY_PRECISION)
 
                 interest_amount = calculate_card_interest_charge(
                     unpaid_statement_balance,
@@ -2151,12 +2224,12 @@ def generate_credit_card_transactions(account, segment_id, starting_transaction_
 
                 available_credit = (
                     credit_limit - outstanding_balance
-                ).quantize(Decimal("0.001"))
+                ).quantize(MONEY_PRECISION)
 
                 interest_amount = min(
                     interest_amount,
                     available_credit
-                ).quantize(Decimal("0.001"))
+                ).quantize(MONEY_PRECISION)
 
                 if interest_amount > 0:
                     transaction = {
@@ -2177,10 +2250,14 @@ def generate_credit_card_transactions(account, segment_id, starting_transaction_
 
                     outstanding_balance = (
                         outstanding_balance + interest_amount
-                    ).quantize(Decimal("0.001"))
+                    ).quantize(MONEY_PRECISION)
 
-        current_cycle_date = cycle_end_date + timedelta(seconds=1)
-    
+        # Move to the next calendar-month card cycle.
+        current_cycle_month = next_cycle_month
+        current_cycle_date = next_cycle_start_date
+
+    # Closed card accounts must end at zero. Any remaining outstanding balance
+    # is settled as a final card payment at the activity end timestamp.
     if account["account_status"] == "Closed" and outstanding_balance > 0:
         settlement_timestamp = account["_activity_end_date"]
 
@@ -2190,11 +2267,11 @@ def generate_credit_card_transactions(account, segment_id, starting_transaction_
             "transaction_timestamp": settlement_timestamp,
             "transaction_type": "Card Payment",
             "transaction_direction": "Credit",
-            "amount": outstanding_balance.quantize(Decimal("0.001")),
+            "amount": outstanding_balance.quantize(MONEY_PRECISION),
             "currency": account["currency"],
             "channel": choose_channel("Card Payment"),
             "merchant_category": None,
-            "created_at": settlement_timestamp,
+            "created_at": generate_created_at(settlement_timestamp),
         }
 
         card_transactions.append(transaction)
@@ -2203,7 +2280,6 @@ def generate_credit_card_transactions(account, segment_id, starting_transaction_
         outstanding_balance = Decimal("0.000")
 
     return card_transactions, starting_transaction_counter
-
 
 # ============================================================
 # Salary account transaction helpers
@@ -3679,7 +3755,7 @@ def print_salary_account_audit(accounts, transactions, customers, max_accounts=1
                 f"{warning}"
             )
 
-def audit_deposit_like_accounts(accounts, transactions, max_accounts=10):
+def print_deposit_like_audit(accounts, transactions, max_accounts=10):
     print("#" * 120)
     print("DEPOSIT-LIKE ACCOUNT AUDIT")
     print("#" * 120)
@@ -3915,4 +3991,4 @@ if __name__ == "__main__":
     transactions = generate_transactions(accounts, crm_dataset["customers"])
 
     update_accounts_from_transactions(accounts, transactions)
-    print_loan_like_audit(accounts, transactions, products, crm_dataset["customers"])
+    print_credit_card_audit(accounts, transactions, crm_dataset["customers"])
