@@ -528,14 +528,6 @@ CARD_CASH_ADVANCE_PROBABILITY_BY_SEGMENT = {
     "SEG005": 0.015,  # Private banking
 }
 
-CARD_CASH_ADVANCE_AMOUNT_RULES = {
-    "SEG001": (20, 500),
-    "SEG002": (50, 1_000),
-    "SEG003": (100, 2_500),
-    "SEG004": (500, 10_000),
-    "SEG005": (200, 5_000),
-}
-
 CARD_CASH_ADVANCE_FEE_RULES = {
     "SEG001": {"rate": Decimal("0.040"), "min": Decimal("5.000")},
     "SEG002": {"rate": Decimal("0.035"), "min": Decimal("7.500")},
@@ -850,28 +842,6 @@ def assign_bank_business_time(base_datetime, earliest_allowed=None, latest_allow
             second=0,
             microsecond=0
         )
-
-def generate_transaction_timestamp(account):
-    """Generate a random transaction timestamp inside the account activity window."""
-    min_datetime = account["_activity_start_date"]
-    max_datetime = account["_activity_end_date"]
-
-    total_seconds = int(
-        (max_datetime - min_datetime).total_seconds()
-    )
-
-    if total_seconds < 0:
-        raise ValueError(
-            f"Invalid activity window for account {account['account_id']}: "
-            f"start {min_datetime} is after end {max_datetime}"
-        )
-
-    if total_seconds == 0:
-        return min_datetime
-
-    return min_datetime + timedelta(
-        seconds=random.randint(0, total_seconds)
-    )
 
 def generate_created_at(transaction_timestamp):
     return transaction_timestamp + timedelta(
@@ -1555,7 +1525,7 @@ def generate_loan_principal_amount(segment_id, product_id):
     )
 
     return (Decimal(amount_in_thousandths) / Decimal("1000")).quantize(
-        Decimal("0.001")
+        MONEY_PRECISION
     )
 
 def choose_loan_term_months(product_id):
@@ -1594,14 +1564,14 @@ def generate_loan_like_transactions(account, segment_id, starting_transaction_co
     disbursement_amount = generate_loan_principal_amount(
         segment_id,
         account["product_id"],
-    ).quantize(Decimal("0.001"))
+    ).quantize(MONEY_PRECISION)
 
     outstanding_balance = disbursement_amount
 
     # 2. Disbursement happens near account opening
     disbursement_date = account["_activity_start_date"]
 
-    disbursement_timestamp = assign_random_business_time(
+    disbursement_timestamp = assign_bank_business_time(
         disbursement_date,
         earliest_allowed=account["_activity_start_date"],
         latest_allowed=schedule_end_date)
@@ -1627,7 +1597,7 @@ def generate_loan_like_transactions(account, segment_id, starting_transaction_co
 
     monthly_repayment_amount = (
         disbursement_amount / Decimal(loan_term_months)
-    ).quantize(Decimal("0.001"))
+    ).quantize(MONEY_PRECISION)
 
     payment_day = disbursement_timestamp.day
 
@@ -1685,7 +1655,7 @@ def generate_loan_like_transactions(account, segment_id, starting_transaction_co
                     random.randint(fee_min * 1000, fee_max * 1000)
                 ) / Decimal("1000")
 
-                fee_amount = fee_amount.quantize(Decimal("0.001"))
+                fee_amount = fee_amount.quantize(MONEY_PRECISION)
 
                 late_fee_transaction = {
                     "transaction_id": f"TR{starting_transaction_counter:06d}",
@@ -1736,7 +1706,7 @@ def generate_loan_like_transactions(account, segment_id, starting_transaction_co
 
         outstanding_balance = (
             outstanding_balance - repayment_amount
-        ).quantize(Decimal("0.001"))
+        ).quantize(MONEY_PRECISION)
 
     # 5. If account is closed force final settlement
     if account["account_status"] == "Closed" and outstanding_balance > 0:
@@ -1748,7 +1718,7 @@ def generate_loan_like_transactions(account, segment_id, starting_transaction_co
             "transaction_timestamp": settlement_timestamp,
             "transaction_type": "Loan Repayment",
             "transaction_direction": "Credit",
-            "amount": outstanding_balance.quantize(Decimal("0.001")),
+            "amount": outstanding_balance.quantize(MONEY_PRECISION),
             "currency": account["currency"],
             "channel": choose_channel("Loan Repayment"),
             "merchant_category": None,
@@ -1778,7 +1748,7 @@ def choose_credit_card_limit(segment_id):
     )
 
     return (Decimal(amount_in_thousandths) / Decimal("1000")).quantize(
-        Decimal("0.001")
+        MONEY_PRECISION
     )
 
 def generate_card_purchase_amount(credit_limit):
@@ -1794,7 +1764,7 @@ def generate_card_purchase_amount(credit_limit):
     )
 
     return (Decimal(amount_in_thousandths) / Decimal("1000")).quantize(
-        Decimal("0.001")
+        MONEY_PRECISION
     )
 
 def generate_cash_advance_amount(credit_limit):
@@ -1807,7 +1777,7 @@ def generate_cash_advance_amount(credit_limit):
     )
 
     return (Decimal(amount_in_thousandths) / Decimal("1000")).quantize(
-        Decimal("0.001")
+        MONEY_PRECISION
     )
 
 def calculate_minimum_card_payment(statement_balance, segment_id):
@@ -1827,12 +1797,12 @@ def calculate_minimum_card_payment(statement_balance, segment_id):
     return min(
         minimum_payment,
         statement_balance
-    ).quantize(Decimal("0.001"))
+    ).quantize(MONEY_PRECISION)
 
 def generate_card_late_fee_amount(segment_id):
     """Generate a segment-based late fee amount."""
     min_fee, max_fee = CARD_LATE_FEE_RULES[segment_id]
-    fee = Decimal(random.randint(min_fee, max_fee)).quantize(Decimal("0.001"))
+    fee = Decimal(random.randint(min_fee, max_fee)).quantize(MONEY_PRECISION)
 
     return fee
 
@@ -1845,7 +1815,7 @@ def calculate_card_interest_charge(unpaid_statement_balance, segment_id):
 
     interest = (
         unpaid_statement_balance * interest_rate
-    ).quantize(Decimal("0.001"))
+    ).quantize(MONEY_PRECISION)
 
     return interest
 
@@ -1856,7 +1826,7 @@ def calculate_cash_advance_fee(cash_advance_amount, segment_id):
     fee = max(
         cash_advance_amount * rule["rate"],
         rule["min"]
-    ).quantize(Decimal("0.001"))
+    ).quantize(MONEY_PRECISION)
 
     return fee
 
@@ -2302,7 +2272,7 @@ def choose_monthly_salary(segment_id):
     )
 
     return (Decimal(amount_in_thousandths) / Decimal("1000")).quantize(
-        Decimal("0.001")
+        MONEY_PRECISION
     )
 
 def generate_total_salary_spending_amount(monthly_salary, segment_id):
@@ -2317,7 +2287,7 @@ def generate_total_salary_spending_amount(monthly_salary, segment_id):
 
     spending_amount = (
         monthly_salary * spending_ratio
-    ).quantize(Decimal("0.001"))
+    ).quantize(MONEY_PRECISION)
 
     return spending_amount
 
@@ -2598,6 +2568,7 @@ def generate_salary_account_transactions(account, segment_id, starting_transacti
 
 
 def generate_transactions(accounts, customers):
+    """Generate transactions for all accounts using the correct product-specific generator."""
     customer_segment_by_id = {
         customer["customer_id"]: customer["segment_id"]
         for customer in customers
@@ -2608,39 +2579,42 @@ def generate_transactions(accounts, customers):
 
     for account in accounts:
         segment_id = customer_segment_by_id[account["customer_id"]]
+        product_id = account["product_id"]
 
-        if account["product_id"] in LOAN_LIKE_PRODUCTS:
+        if product_id in LOAN_LIKE_PRODUCTS:
             new_transactions, transaction_counter = generate_loan_like_transactions(
                 account,
                 segment_id,
                 transaction_counter
             )
 
-        elif account["product_id"] in CREDIT_CARD_PRODUCTS:
+        elif product_id in CREDIT_CARD_PRODUCTS:
             new_transactions, transaction_counter = generate_credit_card_transactions(
                 account,
                 segment_id,
                 transaction_counter
             )
 
-        elif account["product_id"] == "PRD003":
+        elif product_id in SALARY_LIKE_PRODUCTS:
             new_transactions, transaction_counter = generate_salary_account_transactions(
                 account,
                 segment_id,
                 transaction_counter
             )
 
-        else:
+        elif product_id in DEPOSIT_LIKE_PRODUCTS:
             new_transactions, transaction_counter = generate_deposit_like_transactions(
                 account,
                 segment_id,
                 transaction_counter
-            )    
-        
+            )
+
+        else:
+            raise ValueError(f"Invalid product id: {product_id}")
+
         transactions.extend(new_transactions)
 
     return transactions
-
 
 # ============================================================
 # Balance/account update helpers
@@ -2661,8 +2635,17 @@ def apply_transaction_to_balance(balance, transaction):
     )
 
 def update_accounts_from_transactions(accounts, transactions):
+    """Update account balances and updated_at fields from generated transactions.
+
+    This function replays each account's transactions in chronological order,
+    recalculates the final balance, validates that deposit-like accounts do not
+    go negative, and validates that closed accounts end at zero through their
+    actual transaction history.
+    """
     transactions_by_account_id = {}
 
+    # Group transactions by account so each account can be recalculated from
+    # only its own ledger entries.
     for transaction in transactions:
         account_id = transaction["account_id"]
 
@@ -2677,44 +2660,50 @@ def update_accounts_from_transactions(accounts, transactions):
             []
         )
 
+        # Replay transactions chronologically so the running balance reflects
+        # the real ledger order.
         account_transactions = sorted(
             account_transactions,
             key=lambda transaction: transaction["transaction_timestamp"]
         )
 
-        opening_balance = account["_opening_balance"]
-        balance = opening_balance
-        lowest_balance = opening_balance
-        highest_balance = opening_balance
+        # Start from zero because opening funding is represented by an actual
+        # Opening Deposit transaction in the ledger.
+        balance = Decimal("0.000")
+        lowest_balance = Decimal("0.000")
 
+        # Recalculate the account balance from the transaction ledger.
         for transaction in account_transactions:
             balance = apply_transaction_to_balance(balance, transaction)
-
             lowest_balance = min(lowest_balance, balance)
-            highest_balance = max(highest_balance, balance)
 
-        # Deposit/current/savings/salary/business accounts should not go negative.
-        # If they do, increase opening balance enough to cover the lowest point.
+        # Deposit-like accounts should never go negative. If this happens,
+        # the generator created an invalid debit sequence and should be fixed.
         if account["product_id"] in DEPOSIT_LIKE_PRODUCTS and lowest_balance < 0:
-            safety_buffer = Decimal("50.000")
-            opening_balance_adjustment = abs(lowest_balance) + safety_buffer
+            raise ValueError(
+                f"Deposit-like account {account['account_id']} went negative: "
+                f"{lowest_balance}"
+            )
 
-            opening_balance = (
-                opening_balance + opening_balance_adjustment
-            ).quantize(Decimal("0.001"))
+        computed_balance = balance.quantize(MONEY_PRECISION)
 
-            account["_opening_balance"] = opening_balance
+        # Closed accounts should already be settled to zero by their generated
+        # transactions. Do not silently force them to zero here, because that
+        # would hide missing settlement or closure transactions.
+        if (
+            account["account_status"] == "Closed"
+            and computed_balance != Decimal("0.000")
+        ):
+            raise ValueError(
+                f"Closed account {account['account_id']} has non-zero computed balance: "
+                f"{computed_balance}"
+            )
 
-            balance = opening_balance
+        account["current_balance"] = computed_balance
 
-            for transaction in account_transactions:
-                balance = apply_transaction_to_balance(balance, transaction)
-
-        if account["account_status"] == "Closed":
-            account["current_balance"] = Decimal("0.000")
-        else:
-            account["current_balance"] = balance.quantize(Decimal("0.001"))
-
+        # Active accounts are updated when their latest transaction is created.
+        # Non-active accounts use activity_end_date because that represents
+        # when they reached their final state.
         if account_transactions:
             latest_transaction_created_at = max(
                 transaction["created_at"]
@@ -2737,7 +2726,42 @@ def update_accounts_from_transactions(accounts, transactions):
 
 
 def generate_core_dataset():
-    pass
+    """Generate the full core banking dataset.
+
+    Orchestrates reference data, account generation, transaction generation,
+    and final account balance updates. Transactions are generated from the
+    account records, then accounts are recalculated from the transaction ledger
+    so current_balance and updated_at reflect the final generated state.
+    """
+    crm_dataset = generate_crm_dataset()
+    customers = crm_dataset["customers"]
+
+    branches = generate_branches()
+    products = generate_products()
+
+    accounts = generate_accounts(
+        customers,
+        branches,
+        products
+    )
+
+    transactions = generate_transactions(
+        accounts,
+        customers
+    )
+
+    accounts = update_accounts_from_transactions(
+        accounts,
+        transactions
+    )
+
+    return {
+        "customers": customers,
+        "branches": branches,
+        "products": products,
+        "accounts": accounts,
+        "transactions": transactions,
+    }
 
 
 # ============================================================
@@ -2836,6 +2860,20 @@ def print_sample_transactions_by_category(
                     f"{transaction['merchant_category']}"
                 )
 
+def clean_accounts_for_output(accounts):
+    """Remove internal generation-only fields from account records."""
+    cleaned_accounts = []
+
+    for account in accounts:
+        cleaned_account = {
+            key: value
+            for key, value in account.items()
+            if not key.startswith("_")
+        }
+
+        cleaned_accounts.append(cleaned_account)
+
+    return cleaned_accounts
 
 # ============================================================
 # Audit functions
@@ -3255,7 +3293,7 @@ def print_loan_like_audit(accounts, transactions, products, customers, max_accou
             expected_final_balance = Decimal("0.000")
 
             if account["account_status"] != "Closed":
-                expected_final_balance = running_balance.quantize(Decimal("0.001"))
+                expected_final_balance = running_balance.quantize(MONEY_PRECISION)
 
             actual_final_balance = account["current_balance"]
 
@@ -3965,21 +4003,498 @@ def print_deposit_like_audit(accounts, transactions, max_accounts=10):
         if len(account_transactions) > 40:
             print(f"... {len(account_transactions) - 40} more transactions")
 
+def audit_accounts_summary(accounts, customers, branches, products):
+    """Audit account records and print only error counts."""
+
+    valid_statuses = {"Active", "Dormant", "Closed", "Blocked"}
+
+    customer_by_id = {
+        customer["customer_id"]: customer
+        for customer in customers
+    }
+
+    branch_ids = {
+        branch["branch_id"]
+        for branch in branches
+    }
+
+    product_ids = {
+        product["product_id"]
+        for product in products
+    }
+
+    max_datetime = MAX_UPDATE_DATE.replace(
+        hour=23,
+        minute=59,
+        second=59
+    )
+
+    error_counts = {
+        "duplicate_account_ids": 0,
+        "invalid_customer_ids": 0,
+        "invalid_branch_ids": 0,
+        "invalid_product_ids": 0,
+        "duplicate_customer_products": 0,
+        "invalid_statuses": 0,
+        "invalid_currencies": 0,
+        "invalid_product_segment_pairs": 0,
+        "invalid_created_dates": 0,
+        "invalid_open_dates": 0,
+        "invalid_activity_windows": 0,
+        "invalid_opening_balances": 0,
+    }
+
+    seen_account_ids = set()
+    products_by_customer = {}
+
+    for account in accounts:
+        account_id = account["account_id"]
+        customer_id = account["customer_id"]
+        branch_id = account["branch_id"]
+        product_id = account["product_id"]
+        account_status = account["account_status"]
+        currency = account["currency"]
+        created_at = account["created_at"]
+        account_open_date = account["account_open_date"]
+        activity_start_date = account["_activity_start_date"]
+        activity_end_date = account["_activity_end_date"]
+
+        opening_balance = Decimal(str(account["_opening_balance"])).quantize(
+            MONEY_PRECISION
+        )
+
+        if account_id in seen_account_ids:
+            error_counts["duplicate_account_ids"] += 1
+        else:
+            seen_account_ids.add(account_id)
+
+        customer = customer_by_id.get(customer_id)
+
+        if customer is None:
+            error_counts["invalid_customer_ids"] += 1
+            continue
+
+        segment_id = customer["segment_id"]
+        customer_created_at = customer["created_at"]
+
+        if branch_id not in branch_ids:
+            error_counts["invalid_branch_ids"] += 1
+
+        if product_id not in product_ids:
+            error_counts["invalid_product_ids"] += 1
+            continue
+
+        customer_products = products_by_customer.setdefault(customer_id, set())
+
+        if product_id in customer_products:
+            error_counts["duplicate_customer_products"] += 1
+        else:
+            customer_products.add(product_id)
+
+        if account_status not in valid_statuses:
+            error_counts["invalid_statuses"] += 1
+
+        product_weight = PRODUCT_WEIGHTS_BY_SEGMENT[segment_id].get(product_id)
+
+        if product_weight is None or product_weight <= 0:
+            error_counts["invalid_product_segment_pairs"] += 1
+
+        allowed_currencies = CURRENCY_RULES[segment_id]["currencies"]
+
+        if currency not in allowed_currencies:
+            error_counts["invalid_currencies"] += 1
+
+        if created_at < customer_created_at:
+            error_counts["invalid_created_dates"] += 1
+
+        if created_at > max_datetime:
+            error_counts["invalid_created_dates"] += 1
+
+        if account_open_date != created_at.date():
+            error_counts["invalid_open_dates"] += 1
+
+        if activity_start_date < created_at:
+            error_counts["invalid_activity_windows"] += 1
+
+        if activity_end_date < activity_start_date:
+            error_counts["invalid_activity_windows"] += 1
+
+        if activity_end_date > max_datetime:
+            error_counts["invalid_activity_windows"] += 1
+
+        if account_status == "Active" and activity_end_date != max_datetime:
+            error_counts["invalid_activity_windows"] += 1
+
+        if product_id in LOAN_LIKE_PRODUCTS:
+            if opening_balance != Decimal("0.000"):
+                error_counts["invalid_opening_balances"] += 1
+
+        elif product_id in CREDIT_CARD_PRODUCTS:
+            if opening_balance != Decimal("0.000"):
+                error_counts["invalid_opening_balances"] += 1
+
+        elif product_id in SALARY_LIKE_PRODUCTS:
+            if opening_balance != Decimal("0.000"):
+                error_counts["invalid_opening_balances"] += 1
+
+        elif product_id in DEPOSIT_LIKE_PRODUCTS:
+            min_balance, max_balance = BALANCE_LIMIT_RULES[segment_id][product_id]
+
+            min_balance = Decimal(str(min_balance)).quantize(MONEY_PRECISION)
+            max_balance = Decimal(str(max_balance)).quantize(MONEY_PRECISION)
+
+            if opening_balance < min_balance or opening_balance > max_balance:
+                error_counts["invalid_opening_balances"] += 1
+
+    total_errors = sum(error_counts.values())
+
+    print("#" * 80)
+    print("ACCOUNT AUDIT SUMMARY")
+    print("#" * 80)
+    print(f"Accounts checked: {len(accounts)}")
+    print(f"Total errors: {total_errors}")
+
+    for error_name, count in error_counts.items():
+        if count > 0:
+            print(f"  {error_name}: {count}")
+
+    if total_errors == 0:
+        print("No account errors found.")
+
+    print("#" * 80)
+
+    return error_counts
+
+def audit_transactions_summary(accounts, transactions):
+    """Audit generated transactions and print only error counts."""
+
+    account_by_id = {
+        account["account_id"]: account
+        for account in accounts
+    }
+
+    transactions_by_account_id = {}
+
+    for transaction in transactions:
+        account_id = transaction["account_id"]
+
+        if account_id not in transactions_by_account_id:
+            transactions_by_account_id[account_id] = []
+
+        transactions_by_account_id[account_id].append(transaction)
+
+    expected_direction_by_type = {
+        "Opening Deposit": "Credit",
+        "Cash Deposit": "Credit",
+        "Transfer In": "Credit",
+        "Interest Credit": "Credit",
+        "Customer Payment": "Credit",
+        "Salary Credit": "Credit",
+        "Loan Repayment": "Credit",
+        "Card Payment": "Credit",
+
+        "POS Purchase": "Debit",
+        "ATM Withdrawal": "Debit",
+        "Bill Payment": "Debit",
+        "Transfer Out": "Debit",
+        "Supplier Payment": "Debit",
+        "Fee": "Debit",
+        "Account Closure Transfer": "Debit",
+        "Loan Disbursement": "Debit",
+        "Late Fee": "Debit",
+        "Card Purchase": "Debit",
+        "Cash Advance": "Debit",
+        "Cash Advance Fee": "Debit",
+        "Interest Charge": "Debit",
+    }
+
+    salary_allowed_transaction_types = {
+        "Salary Credit",
+        "ATM Withdrawal",
+        "POS Purchase",
+        "Bill Payment",
+        "Transfer Out",
+        "Account Closure Transfer",
+    }
+
+    loan_allowed_transaction_types = {
+        "Loan Disbursement",
+        "Loan Repayment",
+        "Late Fee",
+    }
+
+    card_allowed_transaction_types = {
+        "Card Purchase",
+        "Card Payment",
+        "Late Fee",
+        "Interest Charge",
+        "Cash Advance",
+        "Cash Advance Fee",
+    }
+
+    error_counts = {
+        "duplicate_transaction_ids": 0,
+        "invalid_account_ids": 0,
+        "invalid_transaction_types": 0,
+        "invalid_transaction_directions": 0,
+        "invalid_amounts": 0,
+        "invalid_currencies": 0,
+        "invalid_channels": 0,
+        "invalid_merchant_categories": 0,
+        "transactions_before_activity_start": 0,
+        "transactions_after_activity_end": 0,
+        "final_balance_mismatches": 0,
+        "closed_accounts_non_zero": 0,
+        "deposit_like_accounts_went_negative": 0,
+        "salary_accounts_went_negative": 0,
+        "card_accounts_exceeded_credit_limit": 0,
+        "card_payments_exceeded_owed_balance": 0,
+        "loan_accounts_missing_disbursement": 0,
+        "loan_accounts_multiple_disbursements": 0,
+        "deposit_opening_deposit_errors": 0,
+        "deposit_closure_transfer_errors": 0,
+    }
+
+    seen_transaction_ids = set()
+
+    for transaction in transactions:
+        transaction_id = transaction["transaction_id"]
+        account_id = transaction["account_id"]
+        transaction_type = transaction["transaction_type"]
+        transaction_direction = transaction["transaction_direction"]
+        amount = Decimal(str(transaction["amount"])).quantize(MONEY_PRECISION)
+
+        if transaction_id in seen_transaction_ids:
+            error_counts["duplicate_transaction_ids"] += 1
+        else:
+            seen_transaction_ids.add(transaction_id)
+
+        account = account_by_id.get(account_id)
+
+        if account is None:
+            error_counts["invalid_account_ids"] += 1
+            continue
+
+        if amount <= 0:
+            error_counts["invalid_amounts"] += 1
+
+        if transaction["currency"] != account["currency"]:
+            error_counts["invalid_currencies"] += 1
+
+        if transaction_type not in CHANNEL_RULES_BY_TRANSACTION_TYPE:
+            error_counts["invalid_channels"] += 1
+        else:
+            valid_channels = {
+                channel_rule["channel"]
+                for channel_rule in CHANNEL_RULES_BY_TRANSACTION_TYPE[transaction_type]
+            }
+
+            if transaction["channel"] not in valid_channels:
+                error_counts["invalid_channels"] += 1
+
+        valid_merchant_categories = MERCHANT_CATEGORIES_BY_TRANSACTION_TYPE.get(
+            transaction_type
+        )
+
+        if valid_merchant_categories is None:
+            if transaction["merchant_category"] is not None:
+                error_counts["invalid_merchant_categories"] += 1
+        else:
+            if transaction["merchant_category"] not in valid_merchant_categories:
+                error_counts["invalid_merchant_categories"] += 1
+
+        expected_direction = expected_direction_by_type.get(transaction_type)
+
+        if expected_direction is None:
+            error_counts["invalid_transaction_types"] += 1
+        elif transaction_direction != expected_direction:
+            error_counts["invalid_transaction_directions"] += 1
+
+        product_id = account["product_id"]
+
+        if product_id in DEPOSIT_LIKE_PRODUCTS:
+            if transaction_type not in DEPOSIT_ALLOWED_TRANSACTION_TYPES[product_id]:
+                error_counts["invalid_transaction_types"] += 1
+
+        elif product_id in SALARY_LIKE_PRODUCTS:
+            if transaction_type not in salary_allowed_transaction_types:
+                error_counts["invalid_transaction_types"] += 1
+
+        elif product_id in LOAN_LIKE_PRODUCTS:
+            if transaction_type not in loan_allowed_transaction_types:
+                error_counts["invalid_transaction_types"] += 1
+
+        elif product_id in CREDIT_CARD_PRODUCTS:
+            if transaction_type not in card_allowed_transaction_types:
+                error_counts["invalid_transaction_types"] += 1
+
+        else:
+            error_counts["invalid_transaction_types"] += 1
+
+        if transaction["transaction_timestamp"] < account["_activity_start_date"]:
+            error_counts["transactions_before_activity_start"] += 1
+
+        if transaction["transaction_timestamp"] > account["_activity_end_date"]:
+            error_counts["transactions_after_activity_end"] += 1
+
+    for account in accounts:
+        account_transactions = transactions_by_account_id.get(
+            account["account_id"],
+            []
+        )
+
+        account_transactions = sorted(
+            account_transactions,
+            key=lambda transaction: transaction["transaction_timestamp"]
+        )
+
+        running_balance = Decimal("0.000")
+        lowest_balance = Decimal("0.000")
+
+        disbursement_count = 0
+        opening_deposit_count = 0
+        closure_transfer_count = 0
+
+        for transaction in account_transactions:
+            before_balance = running_balance
+
+            running_balance = apply_transaction_to_balance(
+                running_balance,
+                transaction
+            ).quantize(MONEY_PRECISION)
+
+            lowest_balance = min(lowest_balance, running_balance)
+
+            transaction_type = transaction["transaction_type"]
+
+            if transaction_type == "Loan Disbursement":
+                disbursement_count += 1
+
+            if transaction_type == "Opening Deposit":
+                opening_deposit_count += 1
+
+                expected_opening_balance = Decimal(
+                    str(account["_opening_balance"])
+                ).quantize(MONEY_PRECISION)
+
+                transaction_amount = Decimal(
+                    str(transaction["amount"])
+                ).quantize(MONEY_PRECISION)
+
+                if transaction_amount != expected_opening_balance:
+                    error_counts["deposit_opening_deposit_errors"] += 1
+
+                if transaction["transaction_timestamp"] != account["_activity_start_date"]:
+                    error_counts["deposit_opening_deposit_errors"] += 1
+
+            if transaction_type == "Account Closure Transfer":
+                closure_transfer_count += 1
+
+                if transaction["transaction_timestamp"] != account["_activity_end_date"]:
+                    error_counts["deposit_closure_transfer_errors"] += 1
+
+            if (
+                account["product_id"] in CREDIT_CARD_PRODUCTS
+                and transaction_type == "Card Payment"
+                and before_balance < 0
+                and transaction["amount"] > abs(before_balance)
+            ):
+                error_counts["card_payments_exceeded_owed_balance"] += 1
+
+            credit_limit = account.get("_credit_limit")
+
+            if (
+                account["product_id"] in CREDIT_CARD_PRODUCTS
+                and credit_limit is not None
+                and running_balance < 0
+                and abs(running_balance) > credit_limit
+            ):
+                error_counts["card_accounts_exceeded_credit_limit"] += 1
+
+        computed_balance = running_balance.quantize(MONEY_PRECISION)
+
+        stored_balance = Decimal(str(account["current_balance"])).quantize(
+            MONEY_PRECISION
+        )
+
+        if computed_balance != stored_balance:
+            error_counts["final_balance_mismatches"] += 1
+
+        if (
+            account["account_status"] == "Closed"
+            and computed_balance != Decimal("0.000")
+        ):
+            error_counts["closed_accounts_non_zero"] += 1
+
+        if (
+            account["product_id"] in DEPOSIT_LIKE_PRODUCTS
+            and lowest_balance < 0
+        ):
+            error_counts["deposit_like_accounts_went_negative"] += 1
+
+        if (
+            account["product_id"] in SALARY_LIKE_PRODUCTS
+            and lowest_balance < 0
+        ):
+            error_counts["salary_accounts_went_negative"] += 1
+
+        if account["product_id"] in LOAN_LIKE_PRODUCTS:
+            if disbursement_count == 0:
+                error_counts["loan_accounts_missing_disbursement"] += 1
+
+            if disbursement_count > 1:
+                error_counts["loan_accounts_multiple_disbursements"] += 1
+
+        if account["product_id"] in DEPOSIT_LIKE_PRODUCTS:
+            expected_opening_balance = Decimal(
+                str(account["_opening_balance"])
+            ).quantize(MONEY_PRECISION)
+
+            if expected_opening_balance > 0 and opening_deposit_count != 1:
+                error_counts["deposit_opening_deposit_errors"] += 1
+
+            if expected_opening_balance == 0 and opening_deposit_count != 0:
+                error_counts["deposit_opening_deposit_errors"] += 1
+
+            if account["account_status"] == "Closed":
+                if closure_transfer_count > 1:
+                    error_counts["deposit_closure_transfer_errors"] += 1
+
+    total_errors = sum(error_counts.values())
+
+    print("#" * 80)
+    print("TRANSACTION AUDIT SUMMARY")
+    print("#" * 80)
+    print(f"Transactions checked: {len(transactions)}")
+    print(f"Accounts checked: {len(accounts)}")
+    print(f"Total errors: {total_errors}")
+
+    for error_name, count in error_counts.items():
+        if count > 0:
+            print(f"  {error_name}: {count}")
+
+    if total_errors == 0:
+        print("No transaction errors found.")
+
+    print("#" * 80)
+
+    return error_counts
+
 if __name__ == "__main__":
     from scripts.generate_crm_data import generate_crm_dataset
 
-    branches = generate_branches()
-    products = generate_products()
+    dataset = generate_core_dataset()
 
-    crm_dataset = generate_crm_dataset(200)
-
-    accounts = generate_accounts(
-        crm_dataset["customers"],
-        branches,
-        products
+    audit_accounts_summary(
+        dataset["accounts"],
+        dataset["customers"],
+        dataset["branches"],
+        dataset["products"]
     )
 
-    transactions = generate_transactions(accounts, crm_dataset["customers"])
+    audit_transactions_summary(
+        dataset["accounts"],
+        dataset["transactions"]
+    )
 
-    update_accounts_from_transactions(accounts, transactions)
-    print_salary_account_audit(accounts, transactions, crm_dataset["customers"])
+    accounts = clean_accounts_for_output(dataset["accounts"])
