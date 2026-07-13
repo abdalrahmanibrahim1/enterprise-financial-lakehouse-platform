@@ -899,6 +899,16 @@ def get_account_created_at(account):
         "Opening Deposit audit needs the account creation timestamp."
     )
 
+def get_valid_month_day(year, month, preferred_day):
+    last_day_of_month = calendar.monthrange(year, month)[1]
+    return min(preferred_day, last_day_of_month)
+
+def add_one_month(dt):
+    if dt.month == 12:
+        return dt.replace(year=dt.year + 1, month=1)
+
+    return dt.replace(month=dt.month + 1)
+
 
 # ============================================================
 # Shared transaction metadata helpers
@@ -1557,9 +1567,17 @@ def choose_loan_term_months(product_id):
 
 
 def generate_loan_like_transactions(account, segment_id, starting_transaction_counter):
-    # If a loan account is closed, force final repayment so the ending balance becomes zero.
-    # Dormant and Blocked loans are not forced to settle; they may keep an outstanding balance
-    # because their activity stops before the full loan term finishes.
+    """Generate loan disbursement, repayment, and late-fee transactions.
+
+    Loan accounts start with one disbursement, followed by scheduled monthly
+    repayments until either the loan term finishes or the account activity
+    window ends.
+
+    If the loan term finishes before activity_end_date, the final scheduled
+    payment clears the remaining outstanding balance. Closed accounts are force
+    settled at activity_end_date. Dormant and blocked loans are not force
+    settled, so they may keep an outstanding balance.
+    """
 
     loan_transactions = []
 
@@ -1573,10 +1591,8 @@ def generate_loan_like_transactions(account, segment_id, starting_transaction_co
 
     outstanding_balance = disbursement_amount
 
-    # 3. Disbursement happens near account opening
-    disbursement_date = account["_activity_start_date"] + timedelta(
-        days=random.randint(0, 3)
-    )
+    # 2. Disbursement happens near account opening
+    disbursement_date = account["_activity_start_date"]
 
     disbursement_timestamp = assign_random_business_time(
         disbursement_date,
@@ -1599,16 +1615,40 @@ def generate_loan_like_transactions(account, segment_id, starting_transaction_co
     loan_transactions.append(transaction)
     starting_transaction_counter += 1
 
-    # 4. Choose loan term and monthly repayment
+    # 3. Choose loan term and monthly repayment
     loan_term_months = choose_loan_term_months(account["product_id"])
 
     monthly_repayment_amount = (
         disbursement_amount / Decimal(loan_term_months)
     ).quantize(Decimal("0.001"))
 
-    # 5. Generate monthly repayments, but never past schedule_end_date
+    payment_day = disbursement_timestamp.day
+
+    payment_cycle = disbursement_timestamp.replace(
+        day=1,
+        hour=0,
+        minute=0,
+        second=0,
+        microsecond=0
+    )
+
+    # 4. Generate monthly repayments, but never past schedule_end_date
     for i in range(1, loan_term_months + 1):
-        payment_date = disbursement_date + timedelta(days=30 * i)
+        payment_cycle = add_one_month(payment_cycle)
+
+        valid_payment_day = get_valid_month_day(
+            payment_cycle.year,
+            payment_cycle.month,
+            payment_day
+        )
+
+        payment_date = payment_cycle.replace(
+            day=valid_payment_day,
+            hour=0,
+            minute=0,
+            second=0,
+            microsecond=0
+        )
 
         if payment_date > schedule_end_date:
             break
@@ -1620,11 +1660,6 @@ def generate_loan_like_transactions(account, segment_id, starting_transaction_co
             payment_date,
             earliest_allowed=account["_activity_start_date"],
             latest_allowed=schedule_end_date)
-
-        repayment_amount = min(
-            monthly_repayment_amount,
-            outstanding_balance
-        ).quantize(Decimal("0.001"))
 
         is_late_payment = (
             random.random() < LOAN_LATE_PAYMENT_PROBABILITY_BY_SEGMENT[segment_id]
@@ -1663,7 +1698,18 @@ def generate_loan_like_transactions(account, segment_id, starting_transaction_co
 
                 outstanding_balance = (
                     outstanding_balance + fee_amount
-                ).quantize(Decimal("0.001"))
+                ).quantize(MONEY_PRECISION)
+
+        is_final_scheduled_payment = i == loan_term_months
+
+        if is_final_scheduled_payment:
+            repayment_amount = outstanding_balance.quantize(MONEY_PRECISION)
+        else:
+            repayment_amount = min(
+                monthly_repayment_amount,
+                outstanding_balance
+            ).quantize(MONEY_PRECISION)
+
 
         transaction = {
             "transaction_id": f"TR{starting_transaction_counter:06d}",
@@ -1685,7 +1731,7 @@ def generate_loan_like_transactions(account, segment_id, starting_transaction_co
             outstanding_balance - repayment_amount
         ).quantize(Decimal("0.001"))
 
-    # 6. If account is closed force final settlement
+    # 5. If account is closed force final settlement
     if account["account_status"] == "Closed" and outstanding_balance > 0:
         settlement_timestamp = schedule_end_date
 
@@ -2223,16 +2269,6 @@ def generate_salary_spending_amount(monthly_salary, transaction_type):
     return (Decimal(amount_in_thousandths) / Decimal("1000")).quantize(
         Decimal("0.001")
     )
-
-def get_valid_month_day(year, month, preferred_day):
-    last_day_of_month = calendar.monthrange(year, month)[1]
-    return min(preferred_day, last_day_of_month)
-
-def add_one_month(dt):
-    if dt.month == 12:
-        return dt.replace(year=dt.year + 1, month=1)
-
-    return dt.replace(month=dt.month + 1)
 
 
 # ============================================================
@@ -3878,4 +3914,5 @@ if __name__ == "__main__":
 
     transactions = generate_transactions(accounts, crm_dataset["customers"])
 
-    audit_deposit_like_accounts(accounts, transactions)
+    update_accounts_from_transactions(accounts, transactions)
+    print_loan_like_audit(accounts, transactions, products, crm_dataset["customers"])
