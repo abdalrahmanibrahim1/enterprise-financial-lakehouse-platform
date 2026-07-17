@@ -43,7 +43,11 @@ CREATE TABLE IF NOT EXISTS core_transactions (
     currency VARCHAR(10) NOT NULL,
     channel VARCHAR(50) NOT NULL,
     merchant_category VARCHAR(100),
-    created_at TIMESTAMP NOT NULL
+    created_at TIMESTAMP NOT NULL,
+
+    CONSTRAINT fk_core_transactions_account
+        FOREIGN KEY (account_id)
+        REFERENCES core_accounts(account_id)
 );
 
 CREATE INDEX idx_core_accounts_customer_id
