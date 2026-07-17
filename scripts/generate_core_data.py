@@ -2358,7 +2358,7 @@ def generate_salary_account_transactions(account, segment_id, starting_transacti
         # Skip months where the salary date falls outside the account's
         # activity window.
         if schedule_start_date <= salary_date <= schedule_end_date:
-            salary_timestamp = assign_bank_business_time(
+            salary_timestamp = assign_random_business_time(
                 salary_date,
                 earliest_allowed=schedule_start_date,
                 latest_allowed=schedule_end_date
@@ -2725,7 +2725,7 @@ def update_accounts_from_transactions(accounts, transactions):
 # ============================================================
 
 
-def generate_core_dataset():
+def generate_core_dataset(customers):
     """Generate the full core banking dataset.
 
     Orchestrates reference data, account generation, transaction generation,
@@ -2733,9 +2733,6 @@ def generate_core_dataset():
     account records, then accounts are recalculated from the transaction ledger
     so current_balance and updated_at reflect the final generated state.
     """
-    crm_dataset = generate_crm_dataset()
-    customers = crm_dataset["customers"]
-
     branches = generate_branches()
     products = generate_products()
 
@@ -4483,7 +4480,8 @@ def audit_transactions_summary(accounts, transactions):
 if __name__ == "__main__":
     from scripts.generate_crm_data import generate_crm_dataset
 
-    dataset = generate_core_dataset()
+    crm_dataset = generate_crm_dataset()
+    dataset = generate_core_dataset(crm_dataset["customers"])
 
     audit_accounts_summary(
         dataset["accounts"],
