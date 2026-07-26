@@ -377,10 +377,219 @@ def audit_amount_mismatches(
 
     return errors
 
-if __name__ == "__main__":
+from datetime import timedelta
+
+
+def apply_timestamp_mismatches(
+    retained_records,
+    amount_mismatch_details,
+    base_record_count,
+    mismatch_rate=0.005,
+    seed=44,
+):
+    random_generator = random.Random(seed)
+
+    amount_mismatch_ids = {
+        detail["processor_transaction_id"]
+        for detail in amount_mismatch_details
+    }
+
+    eligible_records = [
+        record
+        for record in retained_records
+        if record["processor_transaction_id"]
+        not in amount_mismatch_ids
+    ]
+
+    mismatch_count = round(
+        base_record_count * mismatch_rate
+    )
+
+    selected_ids = {
+        record["processor_transaction_id"]
+        for record in random_generator.sample(
+            eligible_records,
+            mismatch_count,
+        )
+    }
+
+    updated_records = []
+    timestamp_mismatch_details = []
+
+    for record in retained_records:
+        updated_record = record.copy()
+
+        if (
+            record["processor_transaction_id"]
+            in selected_ids
+        ):
+            original_timestamp = record[
+                "transaction_timestamp"
+            ]
+
+            shift_minutes = random_generator.choice(
+                [2, 5, 10, 15]
+            )
+
+            mismatched_timestamp = (
+                original_timestamp
+                + timedelta(minutes=shift_minutes)
+            )
+
+            updated_record["transaction_timestamp"] = (
+                mismatched_timestamp
+            )
+
+            timestamp_mismatch_details.append({
+                "processor_transaction_id":
+                    record["processor_transaction_id"],
+                "original_timestamp":
+                    original_timestamp,
+                "mismatched_timestamp":
+                    mismatched_timestamp,
+            })
+
+        updated_records.append(updated_record)
+
+    return updated_records, timestamp_mismatch_details
+
+def audit_timestamp_mismatches(
+    records_before_timestamp,
+    updated_records,
+    timestamp_mismatch_details,
+    amount_mismatch_details,
+    expected_count,
+):
+    errors = 0
+
+    before_by_id = {
+        record["processor_transaction_id"]: record
+        for record in records_before_timestamp
+    }
+
+    updated_by_id = {
+        record["processor_transaction_id"]: record
+        for record in updated_records
+    }
+
+    timestamp_details_by_id = {
+        detail["processor_transaction_id"]: detail
+        for detail in timestamp_mismatch_details
+    }
+
+    amount_mismatch_ids = {
+        detail["processor_transaction_id"]
+        for detail in amount_mismatch_details
+    }
+
+    timestamp_mismatch_ids = set(
+        timestamp_details_by_id
+    )
+
+    # Record count must remain unchanged.
+    if len(updated_records) != len(records_before_timestamp):
+        errors += 1
+
+    # No duplicate IDs should exist.
+    if len(updated_by_id) != len(updated_records):
+        errors += 1
+
+    # The same transaction IDs must exist before and after.
+    if set(before_by_id) != set(updated_by_id):
+        errors += 1
+
+    # Confirm the intended number of timestamp mismatches.
+    if len(timestamp_mismatch_details) != expected_count:
+        errors += 1
+
+    # Details must not contain duplicate transaction IDs.
+    if (
+        len(timestamp_details_by_id)
+        != len(timestamp_mismatch_details)
+    ):
+        errors += 1
+
+    # Amount and timestamp mismatches must be separate.
+    if timestamp_mismatch_ids & amount_mismatch_ids:
+        errors += 1
+
+    for processor_id, before_record in before_by_id.items():
+        updated_record = updated_by_id[processor_id]
+
+        if processor_id in timestamp_mismatch_ids:
+            detail = timestamp_details_by_id[processor_id]
+
+            original_timestamp = before_record[
+                "transaction_timestamp"
+            ]
+
+            mismatched_timestamp = updated_record[
+                "transaction_timestamp"
+            ]
+
+            if (
+                detail["original_timestamp"]
+                != original_timestamp
+            ):
+                errors += 1
+
+            if (
+                detail["mismatched_timestamp"]
+                != mismatched_timestamp
+            ):
+                errors += 1
+
+            # The timestamp must actually change.
+            if mismatched_timestamp == original_timestamp:
+                errors += 1
+
+            # Keep the transaction in the same monthly file.
+            if (
+                mismatched_timestamp.year
+                != original_timestamp.year
+                or mismatched_timestamp.month
+                != original_timestamp.month
+            ):
+                errors += 1
+
+            # No field other than the timestamp may change.
+            before_without_timestamp = {
+                field: value
+                for field, value in before_record.items()
+                if field != "transaction_timestamp"
+            }
+
+            updated_without_timestamp = {
+                field: value
+                for field, value in updated_record.items()
+                if field != "transaction_timestamp"
+            }
+
+            if (
+                before_without_timestamp
+                != updated_without_timestamp
+            ):
+                errors += 1
+
+        else:
+            # Non-selected records must remain identical.
+            if updated_record != before_record:
+                errors += 1
+
+    print(f"Timestamp-mismatch audit errors: {errors}")
+
+    if errors == 0:
+        print("Timestamp-mismatch population is valid")
+
+    return errors
+
+def generate_card_transactions():
     core_conn = None
 
     try:
+        # --------------------------------------------------
+        # 1. Fetch posted card transactions from Core
+        # --------------------------------------------------
         core_conn = get_core_connection()
 
         with core_conn.cursor(
@@ -407,73 +616,91 @@ if __name__ == "__main__":
         print(f"Card Purchases: {purchase_count}")
         print(f"Cash Advances: {cash_advance_count}")
 
-        print("\nFirst two transactions:")
+        print("\nFirst two Core transactions:")
 
         for transaction in transactions[:2]:
             print(transaction)
-        
+
+        # --------------------------------------------------
+        # 2. Build clean processor records
+        # --------------------------------------------------
         processor_records = build_base_processor_records(
             transactions
         )
 
         print(
-            f"Base processor records generated: "
+            f"\nBase processor records generated: "
             f"{len(processor_records)}"
         )
+
+        print("\nFirst two processor records:")
 
         for record in processor_records[:2]:
             print(record)
 
-        audit_errors = audit_base_processor_records(
+        base_audit_errors = audit_base_processor_records(
             transactions,
             processor_records,
         )
 
-        if audit_errors > 0:
-            raise ValueError("Base processor record audit failed")
-
-
-        processor_records_98, missing_records = (
-            apply_missing_processor_records(
-                processor_records
+        if base_audit_errors > 0:
+            raise ValueError(
+                "Base processor record audit failed"
             )
+
+        # --------------------------------------------------
+        # 3. Remove 1% of processor records
+        # --------------------------------------------------
+        (
+            retained_processor_records,
+            missing_records,
+        ) = apply_missing_processor_records(
+            processor_records
         )
 
-        match_rate = (
-            len(processor_records_98)
+        retained_rate = (
+            len(retained_processor_records)
             / len(processor_records)
             * 100
         )
 
         print(
-            f"Processor records retained: "
-            f"{len(processor_records_98)}"
+            f"\nProcessor records retained: "
+            f"{len(retained_processor_records)}"
         )
         print(
             f"Intentionally missing records: "
             f"{len(missing_records)}"
         )
-        print(f"Resulting match rate: {match_rate:.2f}%")
+        print(
+            f"Resulting retained rate: "
+            f"{retained_rate:.2f}%"
+        )
 
         split_errors = audit_missing_processor_records(
             processor_records,
-            processor_records_98,
+            retained_processor_records,
             missing_records,
         )
 
         if split_errors > 0:
-            raise ValueError("Processor missing-record split audit failed")
-        
+            raise ValueError(
+                "Processor missing-record split audit failed"
+            )
+
+        # --------------------------------------------------
+        # 4. Add 0.5% amount mismatches
+        # --------------------------------------------------
         (
             processor_records_with_amount_mismatches,
             amount_mismatch_details,
         ) = apply_amount_mismatches(
-            processor_records_98,
+            retained_processor_records,
             len(processor_records),
         )
 
         print(
-            f"Intentional amount mismatches: "
+            f"\nIntentional amount mismatches: "
             f"{len(amount_mismatch_details)}"
         )
 
@@ -487,15 +714,361 @@ if __name__ == "__main__":
         )
 
         amount_mismatch_errors = audit_amount_mismatches(
-            processor_records_98,
+            retained_processor_records,
             processor_records_with_amount_mismatches,
             amount_mismatch_details,
             expected_amount_mismatch_count,
         )
 
         if amount_mismatch_errors > 0:
-            raise ValueError("Amount-mismatch audit failed")
+            raise ValueError(
+                "Amount-mismatch audit failed"
+            )
+
+        # --------------------------------------------------
+        # 5. Add 0.5% timestamp mismatches
+        # --------------------------------------------------
+        (
+            final_processor_records,
+            timestamp_mismatch_details,
+        ) = apply_timestamp_mismatches(
+            processor_records_with_amount_mismatches,
+            amount_mismatch_details,
+            len(processor_records),
+        )
+
+        print(
+            f"\nIntentional timestamp mismatches: "
+            f"{len(timestamp_mismatch_details)}"
+        )
+
+        print("\nFirst two timestamp mismatches:")
+
+        for mismatch in timestamp_mismatch_details[:2]:
+            print(mismatch)
+
+        expected_timestamp_mismatch_count = round(
+            len(processor_records) * 0.005
+        )
+
+        timestamp_mismatch_errors = (
+            audit_timestamp_mismatches(
+                processor_records_with_amount_mismatches,
+                final_processor_records,
+                timestamp_mismatch_details,
+                amount_mismatch_details,
+                expected_timestamp_mismatch_count,
+            )
+        )
+
+        if timestamp_mismatch_errors > 0:
+            raise ValueError(
+                "Timestamp-mismatch audit failed"
+            )
+
+        # --------------------------------------------------
+        # 6. Add processor-only declined/reversed records
+        # --------------------------------------------------
+        (
+            all_processor_records,
+            processor_only_records,
+        ) = add_processor_only_records(
+            final_processor_records,
+            processor_records,
+            len(processor_records),
+        )
+
+        expected_declined_count = round(
+            len(processor_records) * 0.01
+        )
+
+        expected_reversed_count = round(
+            len(processor_records) * 0.002
+        )
+
+        processor_only_errors = audit_processor_only_records(
+            processor_records,
+            final_processor_records,
+            all_processor_records,
+            processor_only_records,
+            expected_declined_count,
+            expected_reversed_count,
+        )
+
+        if processor_only_errors > 0:
+            raise ValueError(
+                "Processor-only record audit failed"
+            )
+
+        declined_count = sum(
+            record["auth_status"] == "DECLINED"
+            for record in processor_only_records
+        )
+
+        reversed_count = sum(
+            record["auth_status"] == "REVERSED"
+            for record in processor_only_records
+        )
+
+        print(
+            f"\nProcessor-only records: "
+            f"{len(processor_only_records)}"
+        )
+        print(
+            f"Processor-only declined: "
+            f"{declined_count}"
+        )
+        print(
+            f"Processor-only reversed: "
+            f"{reversed_count}"
+        )
+
+        print("\nFirst two processor-only records:")
+
+        for record in processor_only_records[:2]:
+            print(record)
+
+        # --------------------------------------------------
+        # 7. Print reconciliation summary
+        # --------------------------------------------------
+        exact_match_count = (
+            len(processor_records)
+            - len(missing_records)
+            - len(amount_mismatch_details)
+            - len(timestamp_mismatch_details)
+        )
+
+        exact_match_rate = (
+            exact_match_count
+            / len(processor_records)
+            * 100
+        )
+
+        print("\nCard processor generation summary:")
+
+        print(
+            f"Core posted transactions: "
+            f"{len(processor_records)}"
+        )
+        print(
+            f"Exact matches: "
+            f"{exact_match_count}"
+        )
+        print(
+            f"Missing from processor: "
+            f"{len(missing_records)}"
+        )
+        print(
+            f"Amount mismatches: "
+            f"{len(amount_mismatch_details)}"
+        )
+        print(
+            f"Timestamp mismatches: "
+            f"{len(timestamp_mismatch_details)}"
+        )
+        print(
+            f"Exact-match rate: "
+            f"{exact_match_rate:.2f}%"
+        )
+        print(
+            f"Core-derived processor records: "
+            f"{len(final_processor_records)}"
+        )
+        print(
+            f"Processor-only records: "
+            f"{len(processor_only_records)}"
+        )
+        print(
+            f"Total processor records: "
+            f"{len(all_processor_records)}"
+        )
 
     finally:
         if core_conn is not None:
             core_conn.close()
+
+
+def add_processor_only_records(
+    current_processor_records,
+    base_processor_records,
+    base_record_count,
+    declined_rate=0.01,
+    reversed_rate=0.002,
+    seed=45,
+):
+    random_generator = random.Random(seed)
+
+    if not current_processor_records:
+        raise ValueError(
+            "Cannot generate processor-only records "
+            "from an empty processor population"
+        )
+
+    if not base_processor_records:
+        raise ValueError(
+            "Base processor records cannot be empty"
+        )
+
+    declined_count = round(
+        base_record_count * declined_rate
+    )
+
+    reversed_count = round(
+        base_record_count * reversed_rate
+    )
+
+    existing_id_numbers = [
+        int(
+            record["processor_transaction_id"].replace(
+                "PTX",
+                "",
+                1,
+            )
+        )
+        for record in base_processor_records
+    ]
+
+    next_id_number = max(existing_id_numbers) + 1
+
+    statuses = (
+        ["DECLINED"] * declined_count
+        + ["REVERSED"] * reversed_count
+    )
+
+    random_generator.shuffle(statuses)
+
+    processor_only_records = []
+
+    for status in statuses:
+        template_record = random_generator.choice(
+            current_processor_records
+        )
+
+        new_record = template_record.copy()
+
+        new_record["processor_transaction_id"] = (
+            f"PTX{next_id_number:06d}"
+        )
+
+        new_record["auth_status"] = status
+
+        new_record["transaction_timestamp"] = (
+            template_record["transaction_timestamp"]
+            + timedelta(
+                minutes=random_generator.randint(
+                    1,
+                    30,
+                )
+            )
+        )
+
+        new_record["amount"] = (
+            Decimal(
+                random_generator.randint(
+                    1000,
+                    5_000_000,
+                )
+            )
+            / Decimal("1000")
+        ).quantize(
+            Decimal("0.001")
+        )
+
+        processor_only_records.append(new_record)
+
+        next_id_number += 1
+
+    combined_records = (
+        current_processor_records
+        + processor_only_records
+    )
+
+    return combined_records, processor_only_records
+
+def audit_processor_only_records(
+    base_processor_records,
+    final_processor_records,
+    all_processor_records,
+    processor_only_records,
+    expected_declined_count,
+    expected_reversed_count,
+):
+    errors = 0
+
+    base_ids = {
+        record["processor_transaction_id"]
+        for record in base_processor_records
+    }
+
+    final_ids = {
+        record["processor_transaction_id"]
+        for record in final_processor_records
+    }
+
+    processor_only_ids = {
+        record["processor_transaction_id"]
+        for record in processor_only_records
+    }
+
+    all_ids = [
+        record["processor_transaction_id"]
+        for record in all_processor_records
+    ]
+
+    declined_count = sum(
+        record["auth_status"] == "DECLINED"
+        for record in processor_only_records
+    )
+
+    reversed_count = sum(
+        record["auth_status"] == "REVERSED"
+        for record in processor_only_records
+    )
+
+    if len(all_processor_records) != (
+        len(final_processor_records)
+        + len(processor_only_records)
+    ):
+        errors += 1
+
+    if len(all_ids) != len(set(all_ids)):
+        errors += 1
+
+    # Processor-only IDs must not match any Core-derived ID,
+    # including intentionally missing records.
+    if processor_only_ids & base_ids:
+        errors += 1
+
+    if final_ids & processor_only_ids:
+        errors += 1
+
+    if declined_count != expected_declined_count:
+        errors += 1
+
+    if reversed_count != expected_reversed_count:
+        errors += 1
+
+    valid_statuses = {
+        "DECLINED",
+        "REVERSED",
+    }
+
+    for record in processor_only_records:
+        if record["auth_status"] not in valid_statuses:
+            errors += 1
+
+        if record["amount"] <= 0:
+            errors += 1
+
+        if record["transaction_timestamp"] is None:
+            errors += 1
+
+    print(f"Processor-only audit errors: {errors}")
+
+    if errors == 0:
+        print("Processor-only population is valid")
+
+    return errors
+
+if __name__ == "__main__":
+    generate_card_transactions()
