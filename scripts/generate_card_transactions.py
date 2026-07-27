@@ -1249,6 +1249,11 @@ def write_monthly_processor_csvs(
         exist_ok=True,
     )
 
+    for old_file in output_dir.glob(
+        "cc_card_transactions_*.csv"
+    ):
+        old_file.unlink()
+
     written_files = []
 
     for (year, month), records in monthly_records.items():
