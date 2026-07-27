@@ -1,17 +1,13 @@
+import csv
+import random
+from collections import defaultdict
+from datetime import datetime, timedelta
+from decimal import Decimal, ROUND_HALF_UP
+from pathlib import Path
+
 from psycopg2.extras import RealDictCursor
 
 from src.connectors.postgres_connector import get_core_connection
-
-import random
-
-from decimal import Decimal, ROUND_HALF_UP
-
-from collections import defaultdict
-
-import csv
-from pathlib import Path
-
-from datetime import datetime, timedelta
 
 MERCHANT_NAMES_BY_CATEGORY = {
     "Groceries": ["Hypermax", "Safeway", "Cozmo"],
@@ -55,6 +51,10 @@ PROCESSOR_TRANSACTION_FIELDS = [
 ]
 
 def fetch_posted_card_transactions(core_cursor):
+    """
+    Fetch posted credit-card purchases and cash advances from Core
+    for accounts using product PRD007.
+    """
     query = """
         SELECT 
             t.transaction_id,
@@ -84,6 +84,10 @@ def fetch_posted_card_transactions(core_cursor):
     return core_cursor.fetchall()
 
 def build_base_processor_record(transaction, random_generator):
+    """
+    Convert one Core card transaction into the external card
+    processor record format.
+    """
     processor_transaction_id = transaction["transaction_id"].replace(
         "TR",
         "PTX",
@@ -125,6 +129,12 @@ def build_base_processor_record(transaction, random_generator):
     }
 
 def build_base_processor_records(transactions, seed = 42):
+    """
+    Build deterministic processor records from Core transactions.
+
+    The fixed seed ensures merchant assignments remain identical
+    across runs when the input transactions are unchanged.
+    """
     random_generator = random.Random(seed)
     processor_records = []
 
@@ -218,6 +228,10 @@ def apply_missing_processor_records(
     missing_rate=0.01,
     seed=42,
 ):
+    """
+    Remove a deterministic sample of processor records to simulate
+    Core transactions that are absent from the external processor feed.
+    """
     random_generator = random.Random(seed)
 
     missing_count = round(
@@ -284,7 +298,7 @@ def audit_missing_processor_records(
 
     match_rate = len(retained_records) / len(base_records)
 
-    # Allow minor rounding around the intended 98%.
+    # Allow minor rounding around the intended 99% retained rate.
     if not 0.989 <= match_rate <= 0.991:
         errors += 1
 
@@ -301,6 +315,10 @@ def apply_amount_mismatches(
     mismatch_rate=0.005,
     seed=43,
 ):
+    """
+    Alter the amounts of a deterministic subset of processor records
+    without modifying the original input records.
+    """
     random_generator = random.Random(seed)
 
     mismatch_count = round(
@@ -408,9 +426,6 @@ def audit_amount_mismatches(
 
     return errors
 
-from datetime import timedelta
-
-
 def apply_timestamp_mismatches(
     retained_records,
     amount_mismatch_details,
@@ -418,6 +433,12 @@ def apply_timestamp_mismatches(
     mismatch_rate=0.005,
     seed=44,
 ):
+    """
+    Shift timestamps for a deterministic subset of processor records.
+
+    Records already selected for amount mismatches are excluded so the
+    two discrepancy populations remain separate.
+    """
     random_generator = random.Random(seed)
 
     amount_mismatch_ids = {
@@ -466,6 +487,15 @@ def apply_timestamp_mismatches(
                 original_timestamp
                 + timedelta(minutes=shift_minutes)
             )
+
+            if (
+                mismatched_timestamp.year != original_timestamp.year
+                or mismatched_timestamp.month != original_timestamp.month
+            ):
+                mismatched_timestamp = (
+                    original_timestamp
+                    - timedelta(minutes=shift_minutes)
+                )
 
             updated_record["transaction_timestamp"] = (
                 mismatched_timestamp
@@ -614,7 +644,520 @@ def audit_timestamp_mismatches(
 
     return errors
 
+def add_processor_only_records(
+    current_processor_records,
+    base_processor_records,
+    base_record_count,
+    declined_rate=0.01,
+    reversed_rate=0.002,
+    seed=45,
+):
+    """
+    Generate declined and reversed processor transactions that have
+    no matching posted transaction in Core.
+
+    Existing records are used as templates to preserve valid card,
+    customer, currency, and merchant relationships.
+    """
+    random_generator = random.Random(seed)
+
+    if not current_processor_records:
+        raise ValueError(
+            "Cannot generate processor-only records "
+            "from an empty processor population"
+        )
+
+    if not base_processor_records:
+        raise ValueError(
+            "Base processor records cannot be empty"
+        )
+
+    declined_count = round(
+        base_record_count * declined_rate
+    )
+
+    reversed_count = round(
+        base_record_count * reversed_rate
+    )
+
+    existing_id_numbers = [
+        int(
+            record["processor_transaction_id"].replace(
+                "PTX",
+                "",
+                1,
+            )
+        )
+        for record in base_processor_records
+    ]
+
+    next_id_number = max(existing_id_numbers) + 1
+
+    statuses = (
+        ["DECLINED"] * declined_count
+        + ["REVERSED"] * reversed_count
+    )
+
+    random_generator.shuffle(statuses)
+
+    processor_only_records = []
+
+    for status in statuses:
+        template_record = random_generator.choice(
+            current_processor_records
+        )
+
+        new_record = template_record.copy()
+
+        new_record["processor_transaction_id"] = (
+            f"PTX{next_id_number:06d}"
+        )
+
+        new_record["auth_status"] = status
+
+        new_record["transaction_timestamp"] = (
+            template_record["transaction_timestamp"]
+            + timedelta(
+                minutes=random_generator.randint(
+                    1,
+                    30,
+                )
+            )
+        )
+
+        new_record["amount"] = (
+            Decimal(
+                random_generator.randint(
+                    1000,
+                    5_000_000,
+                )
+            )
+            / Decimal("1000")
+        ).quantize(
+            Decimal("0.001")
+        )
+
+        processor_only_records.append(new_record)
+
+        next_id_number += 1
+
+    combined_records = (
+        current_processor_records
+        + processor_only_records
+    )
+
+    return combined_records, processor_only_records
+
+def audit_processor_only_records(
+    base_processor_records,
+    final_processor_records,
+    all_processor_records,
+    processor_only_records,
+    expected_declined_count,
+    expected_reversed_count,
+):
+    errors = 0
+
+    base_ids = {
+        record["processor_transaction_id"]
+        for record in base_processor_records
+    }
+
+    final_ids = {
+        record["processor_transaction_id"]
+        for record in final_processor_records
+    }
+
+    processor_only_ids = {
+        record["processor_transaction_id"]
+        for record in processor_only_records
+    }
+
+    all_ids = [
+        record["processor_transaction_id"]
+        for record in all_processor_records
+    ]
+
+    declined_count = sum(
+        record["auth_status"] == "DECLINED"
+        for record in processor_only_records
+    )
+
+    reversed_count = sum(
+        record["auth_status"] == "REVERSED"
+        for record in processor_only_records
+    )
+
+    if len(all_processor_records) != (
+        len(final_processor_records)
+        + len(processor_only_records)
+    ):
+        errors += 1
+
+    if len(all_ids) != len(set(all_ids)):
+        errors += 1
+
+    # Processor-only IDs must not match any Core-derived ID,
+    # including intentionally missing records.
+    if processor_only_ids & base_ids:
+        errors += 1
+
+    if final_ids & processor_only_ids:
+        errors += 1
+
+    if declined_count != expected_declined_count:
+        errors += 1
+
+    if reversed_count != expected_reversed_count:
+        errors += 1
+
+    valid_statuses = {
+        "DECLINED",
+        "REVERSED",
+    }
+
+    for record in processor_only_records:
+        if record["auth_status"] not in valid_statuses:
+            errors += 1
+
+        if record["amount"] <= 0:
+            errors += 1
+
+        if record["transaction_timestamp"] is None:
+            errors += 1
+
+    print(f"Processor-only audit errors: {errors}")
+
+    if errors == 0:
+        print("Processor-only population is valid")
+
+    return errors
+
+def group_processor_records_by_month(processor_records):
+    """
+    Group processor records by transaction year and month for monthly
+    CSV file generation.
+    """
+    monthly_records = defaultdict(list)
+
+    for record in processor_records:
+        transaction_timestamp = record[
+            "transaction_timestamp"
+        ]
+
+        month_key = (
+            transaction_timestamp.year,
+            transaction_timestamp.month,
+        )
+
+        monthly_records[month_key].append(record)
+
+    for records in monthly_records.values():
+        records.sort(
+            key=lambda record: (
+                record["transaction_timestamp"],
+                record["processor_transaction_id"],
+            )
+        )
+
+    return dict(
+        sorted(monthly_records.items())
+    )
+
+def audit_monthly_processor_groups(
+    processor_records,
+    monthly_records,
+):
+    errors = 0
+
+    original_ids = [
+        record["processor_transaction_id"]
+        for record in processor_records
+    ]
+
+    grouped_records = [
+        record
+        for records in monthly_records.values()
+        for record in records
+    ]
+
+    grouped_ids = [
+        record["processor_transaction_id"]
+        for record in grouped_records
+    ]
+
+    # Grouping must preserve the total record count.
+    if len(grouped_records) != len(processor_records):
+        errors += 1
+
+    # The same exact transaction IDs must exist after grouping.
+    if set(grouped_ids) != set(original_ids):
+        errors += 1
+
+    # Grouping must not introduce duplicate IDs.
+    if len(grouped_ids) != len(set(grouped_ids)):
+        errors += 1
+
+    # Every record must belong to its group's year and month.
+    for (year, month), records in monthly_records.items():
+        for record in records:
+            timestamp = record["transaction_timestamp"]
+
+            if (
+                timestamp.year != year
+                or timestamp.month != month
+            ):
+                errors += 1
+
+    print(
+        f"Monthly groups checked: "
+        f"{len(monthly_records)}"
+    )
+    print(
+        f"Records across monthly groups: "
+        f"{len(grouped_records)}"
+    )
+    print(
+        f"Monthly grouping errors: "
+        f"{errors}"
+    )
+
+    if errors == 0:
+        print("Monthly processor grouping is valid")
+
+    return errors
+
+def write_monthly_processor_csvs(
+    monthly_records,
+    output_dir,
+):
+    """
+    Replace existing generated transaction CSVs and write one processor
+    transaction file for each year-month group.
+    """
+    output_dir.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    for old_file in output_dir.glob(
+        "cc_card_transactions_*.csv"
+    ):
+        old_file.unlink()
+
+    written_files = []
+
+    for (year, month), records in monthly_records.items():
+        output_path = (
+            output_dir
+            / f"cc_card_transactions_{year}_{month:02d}.csv"
+        )
+
+        with output_path.open(
+            "w",
+            newline="",
+            encoding="utf-8",
+        ) as csv_file:
+            writer = csv.DictWriter(
+                csv_file,
+                fieldnames=PROCESSOR_TRANSACTION_FIELDS,
+            )
+
+            writer.writeheader()
+            writer.writerows(records)
+
+        written_files.append(output_path)
+
+        print(
+            f"Written: {output_path.name} "
+            f"({len(records)} records)"
+        )
+
+    return written_files
+
+def serialize_processor_records(processor_records):
+    serialized_records = []
+
+    for record in processor_records:
+        serialized_record = {
+            field: (
+                ""
+                if record[field] is None
+                else str(record[field])
+            )
+            for field in PROCESSOR_TRANSACTION_FIELDS
+        }
+
+        serialized_records.append(serialized_record)
+
+    return serialized_records
+
+def verify_monthly_processor_csvs(
+    monthly_records,
+    output_dir,
+):
+    """
+    Read generated monthly CSV files back and verify filenames,
+    headers, row counts, contents, timestamps, and unique IDs.
+    """
+    errors = 0
+    total_rows = 0
+    all_csv_ids = []
+
+    expected_file_names = {
+        f"cc_card_transactions_{year}_{month:02d}.csv"
+        for year, month in monthly_records
+    }
+
+    actual_file_names = {
+        path.name
+        for path in output_dir.glob(
+            "cc_card_transactions_*.csv"
+        )
+    }
+
+    # Detect missing or stale monthly files.
+    if actual_file_names != expected_file_names:
+        errors += 1
+
+        missing_files = (
+            expected_file_names - actual_file_names
+        )
+
+        unexpected_files = (
+            actual_file_names - expected_file_names
+        )
+
+        if missing_files:
+            print(
+                f"Missing monthly files: "
+                f"{sorted(missing_files)}"
+            )
+
+        if unexpected_files:
+            print(
+                f"Unexpected monthly files: "
+                f"{sorted(unexpected_files)}"
+            )
+
+    for (year, month), expected_records in (
+        monthly_records.items()
+    ):
+        file_name = (
+            f"cc_card_transactions_"
+            f"{year}_{month:02d}.csv"
+        )
+
+        file_path = output_dir / file_name
+
+        if not file_path.is_file():
+            continue
+
+        with file_path.open(
+            "r",
+            newline="",
+            encoding="utf-8",
+        ) as csv_file:
+            reader = csv.DictReader(csv_file)
+
+            headers = reader.fieldnames
+            rows = list(reader)
+
+        if headers != PROCESSOR_TRANSACTION_FIELDS:
+            errors += 1
+
+            print(
+                f"Invalid headers in {file_name}: "
+                f"{headers}"
+            )
+
+        if len(rows) != len(expected_records):
+            errors += 1
+
+            print(
+                f"Invalid row count in {file_name}: "
+                f"{len(rows)} instead of "
+                f"{len(expected_records)}"
+            )
+
+        expected_rows = serialize_processor_records(
+            expected_records
+        )
+
+        if rows != expected_rows:
+            errors += 1
+
+            print(
+                f"CSV contents do not match generated "
+                f"records: {file_name}"
+            )
+
+        for row in rows:
+            processor_id = row[
+                "processor_transaction_id"
+            ]
+
+            all_csv_ids.append(processor_id)
+
+            try:
+                timestamp = datetime.fromisoformat(
+                    row["transaction_timestamp"]
+                )
+            except ValueError:
+                errors += 1
+
+                print(
+                    f"Invalid timestamp in {file_name}: "
+                    f"{row['transaction_timestamp']}"
+                )
+
+                continue
+
+            if (
+                timestamp.year != year
+                or timestamp.month != month
+            ):
+                errors += 1
+
+                print(
+                    f"Transaction placed in wrong file: "
+                    f"{processor_id}"
+                )
+
+        total_rows += len(rows)
+
+    expected_total_rows = sum(
+        len(records)
+        for records in monthly_records.values()
+    )
+
+    if total_rows != expected_total_rows:
+        errors += 1
+
+    if len(all_csv_ids) != len(set(all_csv_ids)):
+        errors += 1
+        print("Duplicate processor transaction IDs found")
+
+    print(
+        f"Monthly CSV files checked: "
+        f"{len(expected_file_names)}"
+    )
+    print(f"Monthly CSV rows checked: {total_rows}")
+    print(f"Monthly CSV verification errors: {errors}")
+
+    if errors == 0:
+        print(
+            "No monthly processor CSV verification "
+            "errors found"
+        )
+
+    return errors
+
 def generate_card_transactions():
+    """
+    Generate, audit, split, write, and verify the complete synthetic
+    monthly card-processor transaction source.
+    """
     core_conn = None
 
     try:
@@ -974,489 +1517,6 @@ def generate_card_transactions():
     finally:
         if core_conn is not None:
             core_conn.close()
-
-
-def add_processor_only_records(
-    current_processor_records,
-    base_processor_records,
-    base_record_count,
-    declined_rate=0.01,
-    reversed_rate=0.002,
-    seed=45,
-):
-    random_generator = random.Random(seed)
-
-    if not current_processor_records:
-        raise ValueError(
-            "Cannot generate processor-only records "
-            "from an empty processor population"
-        )
-
-    if not base_processor_records:
-        raise ValueError(
-            "Base processor records cannot be empty"
-        )
-
-    declined_count = round(
-        base_record_count * declined_rate
-    )
-
-    reversed_count = round(
-        base_record_count * reversed_rate
-    )
-
-    existing_id_numbers = [
-        int(
-            record["processor_transaction_id"].replace(
-                "PTX",
-                "",
-                1,
-            )
-        )
-        for record in base_processor_records
-    ]
-
-    next_id_number = max(existing_id_numbers) + 1
-
-    statuses = (
-        ["DECLINED"] * declined_count
-        + ["REVERSED"] * reversed_count
-    )
-
-    random_generator.shuffle(statuses)
-
-    processor_only_records = []
-
-    for status in statuses:
-        template_record = random_generator.choice(
-            current_processor_records
-        )
-
-        new_record = template_record.copy()
-
-        new_record["processor_transaction_id"] = (
-            f"PTX{next_id_number:06d}"
-        )
-
-        new_record["auth_status"] = status
-
-        new_record["transaction_timestamp"] = (
-            template_record["transaction_timestamp"]
-            + timedelta(
-                minutes=random_generator.randint(
-                    1,
-                    30,
-                )
-            )
-        )
-
-        new_record["amount"] = (
-            Decimal(
-                random_generator.randint(
-                    1000,
-                    5_000_000,
-                )
-            )
-            / Decimal("1000")
-        ).quantize(
-            Decimal("0.001")
-        )
-
-        processor_only_records.append(new_record)
-
-        next_id_number += 1
-
-    combined_records = (
-        current_processor_records
-        + processor_only_records
-    )
-
-    return combined_records, processor_only_records
-
-def audit_processor_only_records(
-    base_processor_records,
-    final_processor_records,
-    all_processor_records,
-    processor_only_records,
-    expected_declined_count,
-    expected_reversed_count,
-):
-    errors = 0
-
-    base_ids = {
-        record["processor_transaction_id"]
-        for record in base_processor_records
-    }
-
-    final_ids = {
-        record["processor_transaction_id"]
-        for record in final_processor_records
-    }
-
-    processor_only_ids = {
-        record["processor_transaction_id"]
-        for record in processor_only_records
-    }
-
-    all_ids = [
-        record["processor_transaction_id"]
-        for record in all_processor_records
-    ]
-
-    declined_count = sum(
-        record["auth_status"] == "DECLINED"
-        for record in processor_only_records
-    )
-
-    reversed_count = sum(
-        record["auth_status"] == "REVERSED"
-        for record in processor_only_records
-    )
-
-    if len(all_processor_records) != (
-        len(final_processor_records)
-        + len(processor_only_records)
-    ):
-        errors += 1
-
-    if len(all_ids) != len(set(all_ids)):
-        errors += 1
-
-    # Processor-only IDs must not match any Core-derived ID,
-    # including intentionally missing records.
-    if processor_only_ids & base_ids:
-        errors += 1
-
-    if final_ids & processor_only_ids:
-        errors += 1
-
-    if declined_count != expected_declined_count:
-        errors += 1
-
-    if reversed_count != expected_reversed_count:
-        errors += 1
-
-    valid_statuses = {
-        "DECLINED",
-        "REVERSED",
-    }
-
-    for record in processor_only_records:
-        if record["auth_status"] not in valid_statuses:
-            errors += 1
-
-        if record["amount"] <= 0:
-            errors += 1
-
-        if record["transaction_timestamp"] is None:
-            errors += 1
-
-    print(f"Processor-only audit errors: {errors}")
-
-    if errors == 0:
-        print("Processor-only population is valid")
-
-    return errors
-
-def group_processor_records_by_month(processor_records):
-    monthly_records = defaultdict(list) 
-
-    for record in processor_records:
-        transaction_timestamp = record[
-            "transaction_timestamp"
-        ]
-
-        month_key = (
-            transaction_timestamp.year,
-            transaction_timestamp.month,
-        )
-
-        monthly_records[month_key].append(record)
-
-    return dict(
-        sorted(monthly_records.items())
-    )
-
-def audit_monthly_processor_groups(
-    processor_records,
-    monthly_records,
-):
-    errors = 0
-
-    original_ids = [
-        record["processor_transaction_id"]
-        for record in processor_records
-    ]
-
-    grouped_records = [
-        record
-        for records in monthly_records.values()
-        for record in records
-    ]
-
-    grouped_ids = [
-        record["processor_transaction_id"]
-        for record in grouped_records
-    ]
-
-    # Grouping must preserve the total record count.
-    if len(grouped_records) != len(processor_records):
-        errors += 1
-
-    # The same exact transaction IDs must exist after grouping.
-    if set(grouped_ids) != set(original_ids):
-        errors += 1
-
-    # Grouping must not introduce duplicate IDs.
-    if len(grouped_ids) != len(set(grouped_ids)):
-        errors += 1
-
-    # Every record must belong to its group's year and month.
-    for (year, month), records in monthly_records.items():
-        for record in records:
-            timestamp = record["transaction_timestamp"]
-
-            if (
-                timestamp.year != year
-                or timestamp.month != month
-            ):
-                errors += 1
-
-    print(
-        f"Monthly groups checked: "
-        f"{len(monthly_records)}"
-    )
-    print(
-        f"Records across monthly groups: "
-        f"{len(grouped_records)}"
-    )
-    print(
-        f"Monthly grouping errors: "
-        f"{errors}"
-    )
-
-    if errors == 0:
-        print("Monthly processor grouping is valid")
-
-    return errors
-
-def write_monthly_processor_csvs(
-    monthly_records,
-    output_dir,
-):
-    output_dir.mkdir(
-        parents=True,
-        exist_ok=True,
-    )
-
-    for old_file in output_dir.glob(
-        "cc_card_transactions_*.csv"
-    ):
-        old_file.unlink()
-
-    written_files = []
-
-    for (year, month), records in monthly_records.items():
-        output_path = (
-            output_dir
-            / f"cc_card_transactions_{year}_{month:02d}.csv"
-        )
-
-        with output_path.open(
-            "w",
-            newline="",
-            encoding="utf-8",
-        ) as csv_file:
-            writer = csv.DictWriter(
-                csv_file,
-                fieldnames=PROCESSOR_TRANSACTION_FIELDS,
-            )
-
-            writer.writeheader()
-            writer.writerows(records)
-
-        written_files.append(output_path)
-
-        print(
-            f"Written: {output_path.name} "
-            f"({len(records)} records)"
-        )
-
-    return written_files
-
-def serialize_processor_records(processor_records):
-    serialized_records = []
-
-    for record in processor_records:
-        serialized_record = {
-            field: (
-                ""
-                if record[field] is None
-                else str(record[field])
-            )
-            for field in PROCESSOR_TRANSACTION_FIELDS
-        }
-
-        serialized_records.append(serialized_record)
-
-    return serialized_records
-
-def verify_monthly_processor_csvs(
-    monthly_records,
-    output_dir,
-):
-    errors = 0
-    total_rows = 0
-    all_csv_ids = []
-
-    expected_file_names = {
-        f"cc_card_transactions_{year}_{month:02d}.csv"
-        for year, month in monthly_records
-    }
-
-    actual_file_names = {
-        path.name
-        for path in output_dir.glob(
-            "cc_card_transactions_*.csv"
-        )
-    }
-
-    # Detect missing or stale monthly files.
-    if actual_file_names != expected_file_names:
-        errors += 1
-
-        missing_files = (
-            expected_file_names - actual_file_names
-        )
-
-        unexpected_files = (
-            actual_file_names - expected_file_names
-        )
-
-        if missing_files:
-            print(
-                f"Missing monthly files: "
-                f"{sorted(missing_files)}"
-            )
-
-        if unexpected_files:
-            print(
-                f"Unexpected monthly files: "
-                f"{sorted(unexpected_files)}"
-            )
-
-    for (year, month), expected_records in (
-        monthly_records.items()
-    ):
-        file_name = (
-            f"cc_card_transactions_"
-            f"{year}_{month:02d}.csv"
-        )
-
-        file_path = output_dir / file_name
-
-        if not file_path.is_file():
-            continue
-
-        with file_path.open(
-            "r",
-            newline="",
-            encoding="utf-8",
-        ) as csv_file:
-            reader = csv.DictReader(csv_file)
-
-            headers = reader.fieldnames
-            rows = list(reader)
-
-        if headers != PROCESSOR_TRANSACTION_FIELDS:
-            errors += 1
-
-            print(
-                f"Invalid headers in {file_name}: "
-                f"{headers}"
-            )
-
-        if len(rows) != len(expected_records):
-            errors += 1
-
-            print(
-                f"Invalid row count in {file_name}: "
-                f"{len(rows)} instead of "
-                f"{len(expected_records)}"
-            )
-
-        expected_rows = serialize_processor_records(
-            expected_records
-        )
-
-        if rows != expected_rows:
-            errors += 1
-
-            print(
-                f"CSV contents do not match generated "
-                f"records: {file_name}"
-            )
-
-        for row in rows:
-            processor_id = row[
-                "processor_transaction_id"
-            ]
-
-            all_csv_ids.append(processor_id)
-
-            try:
-                timestamp = datetime.fromisoformat(
-                    row["transaction_timestamp"]
-                )
-            except ValueError:
-                errors += 1
-
-                print(
-                    f"Invalid timestamp in {file_name}: "
-                    f"{row['transaction_timestamp']}"
-                )
-
-                continue
-
-            if (
-                timestamp.year != year
-                or timestamp.month != month
-            ):
-                errors += 1
-
-                print(
-                    f"Transaction placed in wrong file: "
-                    f"{processor_id}"
-                )
-
-        total_rows += len(rows)
-
-    expected_total_rows = sum(
-        len(records)
-        for records in monthly_records.values()
-    )
-
-    if total_rows != expected_total_rows:
-        errors += 1
-
-    if len(all_csv_ids) != len(set(all_csv_ids)):
-        errors += 1
-        print("Duplicate processor transaction IDs found")
-
-    print(
-        f"Monthly CSV files checked: "
-        f"{len(expected_file_names)}"
-    )
-    print(f"Monthly CSV rows checked: {total_rows}")
-    print(f"Monthly CSV verification errors: {errors}")
-
-    if errors == 0:
-        print(
-            "No monthly processor CSV verification "
-            "errors found"
-        )
-
-    return errors
 
 if __name__ == "__main__":
     generate_card_transactions()
