@@ -11,6 +11,8 @@ from collections import defaultdict
 import csv
 from pathlib import Path
 
+from datetime import datetime, timedelta
+
 MERCHANT_NAMES_BY_CATEGORY = {
     "Groceries": ["Hypermax", "Safeway", "Cozmo"],
     "Restaurants": ["Almonds Coffee House", "Shawerma Reem", "Buffalo Wings"],
@@ -888,6 +890,9 @@ def generate_card_transactions():
                 f"{len(records)} records"
             )
 
+        # --------------------------------------------------
+        # 8. Write monthly processor CSV files
+        # --------------------------------------------------
         written_files = write_monthly_processor_csvs(
             monthly_processor_records,
             TRANSACTION_OUTPUT_DIR,
@@ -897,8 +902,22 @@ def generate_card_transactions():
             f"\nMonthly CSV files written: "
             f"{len(written_files)}"
         )
+
         # --------------------------------------------------
-        # 8. Print reconciliation summary
+        # 9. Verify monthly processor CSV files
+        # --------------------------------------------------
+        monthly_csv_errors = verify_monthly_processor_csvs(
+            monthly_processor_records,
+            TRANSACTION_OUTPUT_DIR,
+        )
+
+        if monthly_csv_errors > 0:
+            raise ValueError(
+                "Monthly processor CSV verification failed"
+            )
+        
+        # --------------------------------------------------
+        # 10. Print reconciliation summary
         # --------------------------------------------------
         exact_match_count = (
             len(processor_records)
@@ -1259,6 +1278,180 @@ def write_monthly_processor_csvs(
         )
 
     return written_files
+
+def serialize_processor_records(processor_records):
+    serialized_records = []
+
+    for record in processor_records:
+        serialized_record = {
+            field: (
+                ""
+                if record[field] is None
+                else str(record[field])
+            )
+            for field in PROCESSOR_TRANSACTION_FIELDS
+        }
+
+        serialized_records.append(serialized_record)
+
+    return serialized_records
+
+def verify_monthly_processor_csvs(
+    monthly_records,
+    output_dir,
+):
+    errors = 0
+    total_rows = 0
+    all_csv_ids = []
+
+    expected_file_names = {
+        f"cc_card_transactions_{year}_{month:02d}.csv"
+        for year, month in monthly_records
+    }
+
+    actual_file_names = {
+        path.name
+        for path in output_dir.glob(
+            "cc_card_transactions_*.csv"
+        )
+    }
+
+    # Detect missing or stale monthly files.
+    if actual_file_names != expected_file_names:
+        errors += 1
+
+        missing_files = (
+            expected_file_names - actual_file_names
+        )
+
+        unexpected_files = (
+            actual_file_names - expected_file_names
+        )
+
+        if missing_files:
+            print(
+                f"Missing monthly files: "
+                f"{sorted(missing_files)}"
+            )
+
+        if unexpected_files:
+            print(
+                f"Unexpected monthly files: "
+                f"{sorted(unexpected_files)}"
+            )
+
+    for (year, month), expected_records in (
+        monthly_records.items()
+    ):
+        file_name = (
+            f"cc_card_transactions_"
+            f"{year}_{month:02d}.csv"
+        )
+
+        file_path = output_dir / file_name
+
+        if not file_path.is_file():
+            continue
+
+        with file_path.open(
+            "r",
+            newline="",
+            encoding="utf-8",
+        ) as csv_file:
+            reader = csv.DictReader(csv_file)
+
+            headers = reader.fieldnames
+            rows = list(reader)
+
+        if headers != PROCESSOR_TRANSACTION_FIELDS:
+            errors += 1
+
+            print(
+                f"Invalid headers in {file_name}: "
+                f"{headers}"
+            )
+
+        if len(rows) != len(expected_records):
+            errors += 1
+
+            print(
+                f"Invalid row count in {file_name}: "
+                f"{len(rows)} instead of "
+                f"{len(expected_records)}"
+            )
+
+        expected_rows = serialize_processor_records(
+            expected_records
+        )
+
+        if rows != expected_rows:
+            errors += 1
+
+            print(
+                f"CSV contents do not match generated "
+                f"records: {file_name}"
+            )
+
+        for row in rows:
+            processor_id = row[
+                "processor_transaction_id"
+            ]
+
+            all_csv_ids.append(processor_id)
+
+            try:
+                timestamp = datetime.fromisoformat(
+                    row["transaction_timestamp"]
+                )
+            except ValueError:
+                errors += 1
+
+                print(
+                    f"Invalid timestamp in {file_name}: "
+                    f"{row['transaction_timestamp']}"
+                )
+
+                continue
+
+            if (
+                timestamp.year != year
+                or timestamp.month != month
+            ):
+                errors += 1
+
+                print(
+                    f"Transaction placed in wrong file: "
+                    f"{processor_id}"
+                )
+
+        total_rows += len(rows)
+
+    expected_total_rows = sum(
+        len(records)
+        for records in monthly_records.values()
+    )
+
+    if total_rows != expected_total_rows:
+        errors += 1
+
+    if len(all_csv_ids) != len(set(all_csv_ids)):
+        errors += 1
+        print("Duplicate processor transaction IDs found")
+
+    print(
+        f"Monthly CSV files checked: "
+        f"{len(expected_file_names)}"
+    )
+    print(f"Monthly CSV rows checked: {total_rows}")
+    print(f"Monthly CSV verification errors: {errors}")
+
+    if errors == 0:
+        print(
+            "No monthly processor CSV verification "
+            "errors found"
+        )
+
+    return errors
 
 if __name__ == "__main__":
     generate_card_transactions()
