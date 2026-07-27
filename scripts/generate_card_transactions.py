@@ -6,6 +6,11 @@ import random
 
 from decimal import Decimal, ROUND_HALF_UP
 
+from collections import defaultdict
+
+import csv
+from pathlib import Path
+
 MERCHANT_NAMES_BY_CATEGORY = {
     "Groceries": ["Hypermax", "Safeway", "Cozmo"],
     "Restaurants": ["Almonds Coffee House", "Shawerma Reem", "Buffalo Wings"],
@@ -22,6 +27,30 @@ MERCHANT_NAMES_BY_CATEGORY = {
     "Clothing": ["Zara", "H&M", "American Eagle"],
     "Electronics": ["SmartBuy", "Leaders Center", "iSystem"],
 }
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+TRANSACTION_OUTPUT_DIR = (
+    PROJECT_ROOT
+    / "data"
+    / "source"
+    / "card_processor"
+    / "transactions"
+)
+
+PROCESSOR_TRANSACTION_FIELDS = [
+    "processor_transaction_id",
+    "card_id",
+    "customer_id",
+    "transaction_timestamp",
+    "transaction_type",
+    "merchant_name",
+    "amount",
+    "currency",
+    "merchant_category",
+    "auth_status",
+]
 
 def fetch_posted_card_transactions(core_cursor):
     query = """
@@ -829,7 +858,47 @@ def generate_card_transactions():
             print(record)
 
         # --------------------------------------------------
-        # 7. Print reconciliation summary
+        # 7. Group processor records by month
+        # --------------------------------------------------
+        monthly_processor_records = (
+            group_processor_records_by_month(
+                all_processor_records
+            )
+        )
+
+        monthly_grouping_errors = (
+            audit_monthly_processor_groups(
+                all_processor_records,
+                monthly_processor_records,
+            )
+        )
+
+        if monthly_grouping_errors > 0:
+            raise ValueError(
+                "Monthly processor grouping audit failed"
+            )
+
+        print("\nMonthly processor groups:")
+
+        for (year, month), records in (
+            monthly_processor_records.items()
+        ):
+            print(
+                f"{year}-{month:02d}: "
+                f"{len(records)} records"
+            )
+
+        written_files = write_monthly_processor_csvs(
+            monthly_processor_records,
+            TRANSACTION_OUTPUT_DIR,
+        )
+
+        print(
+            f"\nMonthly CSV files written: "
+            f"{len(written_files)}"
+        )
+        # --------------------------------------------------
+        # 8. Print reconciliation summary
         # --------------------------------------------------
         exact_match_count = (
             len(processor_records)
@@ -1069,6 +1138,127 @@ def audit_processor_only_records(
         print("Processor-only population is valid")
 
     return errors
+
+def group_processor_records_by_month(processor_records):
+    monthly_records = defaultdict(list) 
+
+    for record in processor_records:
+        transaction_timestamp = record[
+            "transaction_timestamp"
+        ]
+
+        month_key = (
+            transaction_timestamp.year,
+            transaction_timestamp.month,
+        )
+
+        monthly_records[month_key].append(record)
+
+    return dict(
+        sorted(monthly_records.items())
+    )
+
+def audit_monthly_processor_groups(
+    processor_records,
+    monthly_records,
+):
+    errors = 0
+
+    original_ids = [
+        record["processor_transaction_id"]
+        for record in processor_records
+    ]
+
+    grouped_records = [
+        record
+        for records in monthly_records.values()
+        for record in records
+    ]
+
+    grouped_ids = [
+        record["processor_transaction_id"]
+        for record in grouped_records
+    ]
+
+    # Grouping must preserve the total record count.
+    if len(grouped_records) != len(processor_records):
+        errors += 1
+
+    # The same exact transaction IDs must exist after grouping.
+    if set(grouped_ids) != set(original_ids):
+        errors += 1
+
+    # Grouping must not introduce duplicate IDs.
+    if len(grouped_ids) != len(set(grouped_ids)):
+        errors += 1
+
+    # Every record must belong to its group's year and month.
+    for (year, month), records in monthly_records.items():
+        for record in records:
+            timestamp = record["transaction_timestamp"]
+
+            if (
+                timestamp.year != year
+                or timestamp.month != month
+            ):
+                errors += 1
+
+    print(
+        f"Monthly groups checked: "
+        f"{len(monthly_records)}"
+    )
+    print(
+        f"Records across monthly groups: "
+        f"{len(grouped_records)}"
+    )
+    print(
+        f"Monthly grouping errors: "
+        f"{errors}"
+    )
+
+    if errors == 0:
+        print("Monthly processor grouping is valid")
+
+    return errors
+
+def write_monthly_processor_csvs(
+    monthly_records,
+    output_dir,
+):
+    output_dir.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    written_files = []
+
+    for (year, month), records in monthly_records.items():
+        output_path = (
+            output_dir
+            / f"cc_card_transactions_{year}_{month:02d}.csv"
+        )
+
+        with output_path.open(
+            "w",
+            newline="",
+            encoding="utf-8",
+        ) as csv_file:
+            writer = csv.DictWriter(
+                csv_file,
+                fieldnames=PROCESSOR_TRANSACTION_FIELDS,
+            )
+
+            writer.writeheader()
+            writer.writerows(records)
+
+        written_files.append(output_path)
+
+        print(
+            f"Written: {output_path.name} "
+            f"({len(records)} records)"
+        )
+
+    return written_files
 
 if __name__ == "__main__":
     generate_card_transactions()
