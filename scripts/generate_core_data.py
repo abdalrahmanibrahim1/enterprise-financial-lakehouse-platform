@@ -1571,11 +1571,11 @@ def generate_loan_like_transactions(account, segment_id, starting_transaction_co
     # 2. Disbursement happens near account opening
     disbursement_date = account["_activity_start_date"]
 
-    disbursement_timestamp = assign_bank_business_time(
+    disbursement_timestamp = assign_random_business_time(
         disbursement_date,
         earliest_allowed=account["_activity_start_date"],
         latest_allowed=schedule_end_date)
-
+    
     transaction = {
         "transaction_id": f"TR{starting_transaction_counter:06d}",
         "account_id": account["account_id"],
