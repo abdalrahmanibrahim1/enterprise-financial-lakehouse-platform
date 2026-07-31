@@ -6,12 +6,12 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
-FX_OUTPUT_PATH = (
+REF_FX_RATES_OUTPUT_PATH = (
     PROJECT_ROOT
     / "data"
     / "source"
     / "reference"
-    / "fx_rates.json"
+    / "ref_fx_rates.json"
 )
 
 def fetch_fx_requirements(core_cursor):
@@ -100,11 +100,8 @@ if __name__ == "__main__":
         
         all_rates.extend(rates)
 
-    write_fx_rates(all_rates, FX_OUTPUT_PATH)
-    verify_fx_rates_file(all_rates, FX_OUTPUT_PATH)
+    write_fx_rates(all_rates, REF_FX_RATES_OUTPUT_PATH)
+    verify_fx_rates_file(all_rates, REF_FX_RATES_OUTPUT_PATH)
 
-    print(f"Written: {FX_OUTPUT_PATH}")
+    print(f"Written: {REF_FX_RATES_OUTPUT_PATH}")
     print(f"Records written: {len(all_rates)}")
-
-
-    
