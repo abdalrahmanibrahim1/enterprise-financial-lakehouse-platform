@@ -20,3 +20,20 @@ def get_minio_client():
     )
 
     return conn
+
+def ensure_bucket_exists():
+    client = get_minio_client()
+    bucket_name = os.getenv("MINIO_BUCKET")
+
+    existing_buckets = {
+        bucket["Name"]
+        for bucket in client.list_buckets()["Buckets"]
+    }
+
+    if bucket_name not in existing_buckets:
+        client.create_bucket(Bucket=bucket_name)
+        print(f"MinIO bucket created: {bucket_name}")
+    else:
+        print(f"MinIO bucket already exists: {bucket_name}")
+
+    return bucket_name

@@ -3,8 +3,10 @@ from src.connectors.postgres_connector import (
     get_core_connection,
     get_warehouse_connection,
 )
-from src.connectors.minio_connector import get_minio_client
-
+from src.connectors.minio_connector import (
+    ensure_bucket_exists,
+    get_minio_client,
+)
 if __name__ == "__main__":
     conn = get_core_connection()
     cursor = conn.cursor()
@@ -31,6 +33,9 @@ if __name__ == "__main__":
     conn.close()
 
     minio_client = get_minio_client()
+
+    ensure_bucket_exists()
+
     response = minio_client.list_buckets()
 
     bucket_names = [
