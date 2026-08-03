@@ -6,7 +6,13 @@ from src.connectors.postgres_connector import (
 from src.connectors.minio_connector import (
     ensure_bucket_exists,
     get_minio_client,
+    upload_file_to_minio,
+    object_exists,
+    download_file_from_minio,
 )
+
+from pathlib import Path
+
 if __name__ == "__main__":
     conn = get_core_connection()
     cursor = conn.cursor()
@@ -47,3 +53,36 @@ if __name__ == "__main__":
         f"MinIO connection successful. "
         f"Buckets found: {bucket_names}"
     )
+
+
+    PROJECT_ROOT = Path(__file__).resolve().parent
+
+    tmp_dir = PROJECT_ROOT / "tmp"
+    tmp_dir.mkdir(exist_ok=True)
+
+    test_file_path = tmp_dir / "minio_test.txt"
+    test_file_path.write_text(
+        "Hello from MinIO",
+        encoding="utf-8",
+    )
+
+    uploaded_object_key = upload_file_to_minio(
+        str(test_file_path),
+        "test/minio_test.txt",
+    )
+
+    print(f"Uploaded MinIO object: {uploaded_object_key}")
+
+    exists = object_exists("test/minio_test.txt")
+    print(f"Uploaded object exists: {exists}")
+
+    downloaded_file_path = tmp_dir /"minio_test_downloaded.txt"
+    download_file_from_minio(
+        "test/minio_test.txt",
+        downloaded_file_path
+    )
+
+    original_content = test_file_path.read_text(encoding="utf-8")
+    downloaded_content = downloaded_file_path.read_text(encoding="utf-8")
+
+    print(original_content == downloaded_content)
