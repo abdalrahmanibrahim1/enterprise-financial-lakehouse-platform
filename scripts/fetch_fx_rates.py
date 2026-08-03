@@ -14,6 +14,12 @@ REF_FX_RATES_OUTPUT_PATH = (
     / "ref_fx_rates.json"
 )
 
+INVALID_RATE_INDEX = 0
+INVALID_DATE_INDEX = 1
+
+INVALID_RATE_VALUE = "NOT_A_NUMBER"
+INVALID_DATE_VALUE = 12345
+
 def fetch_fx_requirements(core_cursor):
     query = """
     SELECT
@@ -61,6 +67,7 @@ def write_fx_rates(rates, output_path):
             ensure_ascii=False
         )
 
+
 def verify_fx_rates_file(expected_rates, output_path):
     with output_path.open("r", encoding="utf-8") as json_file:
         loaded_rates = json.load(json_file)
@@ -71,6 +78,41 @@ def verify_fx_rates_file(expected_rates, output_path):
 
     if loaded_rates != expected_rates:
         raise ValueError("FX rates file verification failed")
+
+def inject_invalid_fx_types(rates):
+    if len(rates) < 2:
+        raise ValueError(
+            "At least two FX records are required to inject invalid types"
+        )
+
+    # Copy the records so the untouched API response remains available.
+    dirty_rates = [record.copy() for record in rates]
+
+    dirty_rates[INVALID_RATE_INDEX]["rate"] = INVALID_RATE_VALUE
+    dirty_rates[INVALID_DATE_INDEX]["date"] = INVALID_DATE_VALUE
+
+    return dirty_rates
+
+def verify_invalid_fx_types(output_path):
+    with output_path.open("r", encoding="utf-8") as json_file:
+        loaded_rates = json.load(json_file)
+
+    invalid_rate = loaded_rates[INVALID_RATE_INDEX]["rate"]
+    invalid_date = loaded_rates[INVALID_DATE_INDEX]["date"]
+
+    if invalid_rate != INVALID_RATE_VALUE:
+        raise ValueError("Invalid FX rate was not written correctly")
+
+    if invalid_date != INVALID_DATE_VALUE:
+        raise ValueError("Invalid FX date was not written correctly")
+
+    if type(invalid_rate) is not str:
+        raise TypeError("Injected FX rate must be a string")
+
+    if type(invalid_date) is not int:
+        raise TypeError("Injected FX date must be an integer")
+
+    print("Controlled invalid FX types verified: 2")
 
 if __name__ == "__main__":
     fx_requirements = None
@@ -100,8 +142,13 @@ if __name__ == "__main__":
         
         all_rates.extend(rates)
 
-    write_fx_rates(all_rates, REF_FX_RATES_OUTPUT_PATH)
-    verify_fx_rates_file(all_rates, REF_FX_RATES_OUTPUT_PATH)
+    source_rates = inject_invalid_fx_types(all_rates)
+
+    write_fx_rates(source_rates, REF_FX_RATES_OUTPUT_PATH)
+    verify_fx_rates_file(source_rates, REF_FX_RATES_OUTPUT_PATH)
+    verify_invalid_fx_types(REF_FX_RATES_OUTPUT_PATH)
 
     print(f"Written: {REF_FX_RATES_OUTPUT_PATH}")
-    print(f"Records written: {len(all_rates)}")
+    print(f"Valid API records fetched: {len(all_rates)}")
+    print(f"Source records written: {len(source_rates)}")
+    print("Intentionally invalid type records: 2")

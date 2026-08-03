@@ -3,10 +3,10 @@
     "date": "2023-05-09",
     "base": "EUR",
     "quote": "JOD",
-    "rate": 0.77938
+    "rate": "NOT_A_NUMBER"
   },
   {
-    "date": "2023-05-10",
+    "date": 12345,
     "base": "EUR",
     "quote": "JOD",
     "rate": 0.77792
