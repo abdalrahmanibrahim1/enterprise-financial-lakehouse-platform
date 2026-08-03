@@ -1,2 +1,0 @@
-processor_transaction_id,card_id,customer_id,transaction_timestamp,transaction_type,merchant_name,amount,currency,merchant_category,auth_status
-PTX435628,CARD005130,C003547,2023-02-27 15:05:36,PURCHASE,Microsoft 365,NOT_A_NUMBER,JOD,Subscriptions,APPROVED

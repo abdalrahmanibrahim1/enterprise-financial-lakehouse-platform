@@ -2,3 +2,8 @@
 __pycache__/
 *.pyc
 .env
+
+# Generated synthetic source data
+data/source/card_processor/cards/cc_cards.csv
+data/source/card_processor/transactions/*.csv
+data/source/reference/ref_fx_rates.json
