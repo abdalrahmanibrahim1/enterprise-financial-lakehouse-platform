@@ -2,12 +2,15 @@ import csv
 import random
 from collections import defaultdict
 from datetime import datetime, timedelta
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import Decimal, ROUND_HALF_UP, InvalidOperation
 from pathlib import Path
 
 from psycopg2.extras import RealDictCursor
 
 from src.connectors.postgres_connector import get_core_connection
+
+INVALID_AMOUNT_VALUE = "NOT_A_NUMBER"
+INVALID_TIMESTAMP_VALUE = "NOT_A_TIMESTAMP"
 
 MERCHANT_NAMES_BY_CATEGORY = {
     "Groceries": ["Hypermax", "Safeway", "Cozmo"],
@@ -927,6 +930,113 @@ def audit_monthly_processor_groups(
 
     return errors
 
+def inject_invalid_card_transaction_types(
+    monthly_records,
+    amount_mismatch_details,
+    timestamp_mismatch_details,
+):
+    """
+    Add two deterministic invalid-type values to separate records:
+
+    - One non-numeric amount
+    - One non-parseable transaction timestamp
+
+    Existing mismatch records are excluded so every anomaly population
+    remains separate and easy to reconcile.
+    """
+    dirty_monthly_records = {
+        month_key: [
+            record.copy()
+            for record in records
+        ]
+        for month_key, records in monthly_records.items()
+    }
+
+    amount_mismatch_ids = {
+        detail["processor_transaction_id"]
+        for detail in amount_mismatch_details
+    }
+
+    timestamp_mismatch_ids = {
+        detail["processor_transaction_id"]
+        for detail in timestamp_mismatch_details
+    }
+
+    excluded_ids = (
+        amount_mismatch_ids
+        | timestamp_mismatch_ids
+    )
+
+    eligible_records = []
+
+    for month_key, records in dirty_monthly_records.items():
+        for record in records:
+            processor_id = record[
+                "processor_transaction_id"
+            ]
+
+            if (
+                record["auth_status"] == "APPROVED"
+                and processor_id not in excluded_ids
+            ):
+                eligible_records.append(
+                    (month_key, record)
+                )
+
+            if len(eligible_records) == 2:
+                break
+
+        if len(eligible_records) == 2:
+            break
+
+    if len(eligible_records) < 2:
+        raise ValueError(
+            "At least two eligible processor records are "
+            "required to inject invalid types"
+        )
+
+    (
+        invalid_amount_month,
+        invalid_amount_record,
+    ) = eligible_records[0]
+
+    (
+        invalid_timestamp_month,
+        invalid_timestamp_record,
+    ) = eligible_records[1]
+
+    invalid_amount_record["amount"] = (
+        INVALID_AMOUNT_VALUE
+    )
+
+    invalid_timestamp_record[
+        "transaction_timestamp"
+    ] = INVALID_TIMESTAMP_VALUE
+
+    invalid_type_details = {
+        "invalid_amount": {
+            "processor_transaction_id":
+                invalid_amount_record[
+                    "processor_transaction_id"
+                ],
+            "month_key": invalid_amount_month,
+            "value": INVALID_AMOUNT_VALUE,
+        },
+        "invalid_timestamp": {
+            "processor_transaction_id":
+                invalid_timestamp_record[
+                    "processor_transaction_id"
+                ],
+            "month_key": invalid_timestamp_month,
+            "value": INVALID_TIMESTAMP_VALUE,
+        },
+    }
+
+    return (
+        dirty_monthly_records,
+        invalid_type_details,
+    )
+
 def write_monthly_processor_csvs(
     monthly_records,
     output_dir,
@@ -995,14 +1105,33 @@ def serialize_processor_records(processor_records):
 def verify_monthly_processor_csvs(
     monthly_records,
     output_dir,
+    invalid_type_details,
 ):
     """
     Read generated monthly CSV files back and verify filenames,
-    headers, row counts, contents, timestamps, and unique IDs.
+    headers, row counts, contents, timestamps, amounts, and unique IDs.
     """
     errors = 0
     total_rows = 0
     all_csv_ids = []
+
+    invalid_amount_id = (
+        invalid_type_details["invalid_amount"][
+            "processor_transaction_id"
+        ]
+    )
+
+    invalid_timestamp_id = (
+        invalid_type_details["invalid_timestamp"][
+            "processor_transaction_id"
+        ]
+    )
+
+    invalid_timestamp_month = (
+        invalid_type_details["invalid_timestamp"][
+            "month_key"
+        ]
+    )
 
     expected_file_names = {
         f"cc_card_transactions_{year}_{month:02d}.csv"
@@ -1099,6 +1228,68 @@ def verify_monthly_processor_csvs(
 
             all_csv_ids.append(processor_id)
 
+            # ------------------------------------------
+            # Validate amount
+            # ------------------------------------------
+            if processor_id == invalid_amount_id:
+                if (
+                    row["amount"]
+                    != INVALID_AMOUNT_VALUE
+                ):
+                    errors += 1
+
+                    print(
+                        f"Expected invalid amount was not "
+                        f"found for {processor_id}"
+                    )
+            else:
+                try:
+                    parsed_amount = Decimal(
+                        row["amount"]
+                    )
+
+                    if not parsed_amount.is_finite():
+                        raise InvalidOperation
+
+                except InvalidOperation:
+                    errors += 1
+
+                    print(
+                        f"Unexpected invalid amount in "
+                        f"{file_name}: "
+                        f"{row['amount']}"
+                    )
+
+            # ------------------------------------------
+            # Validate timestamp
+            # ------------------------------------------
+            if processor_id == invalid_timestamp_id:
+                if (
+                    row["transaction_timestamp"]
+                    != INVALID_TIMESTAMP_VALUE
+                ):
+                    errors += 1
+
+                    print(
+                        f"Expected invalid timestamp was "
+                        f"not found for {processor_id}"
+                    )
+
+                if (
+                    year,
+                    month,
+                ) != invalid_timestamp_month:
+                    errors += 1
+
+                    print(
+                        f"Invalid-timestamp record was "
+                        f"written to the wrong file: "
+                        f"{processor_id}"
+                    )
+
+                # This timestamp is intentionally invalid.
+                continue
+
             try:
                 timestamp = datetime.fromisoformat(
                     row["transaction_timestamp"]
@@ -1107,7 +1298,8 @@ def verify_monthly_processor_csvs(
                 errors += 1
 
                 print(
-                    f"Invalid timestamp in {file_name}: "
+                    f"Unexpected invalid timestamp in "
+                    f"{file_name}: "
                     f"{row['transaction_timestamp']}"
                 )
 
@@ -1124,8 +1316,10 @@ def verify_monthly_processor_csvs(
                     f"{processor_id}"
                 )
 
+        # Add this file's rows once, not once per row.
         total_rows += len(rows)
 
+    # These checks run after every monthly file has been read.
     expected_total_rows = sum(
         len(records)
         for records in monthly_records.values()
@@ -1134,9 +1328,31 @@ def verify_monthly_processor_csvs(
     if total_rows != expected_total_rows:
         errors += 1
 
+        print(
+            f"Total row count mismatch: "
+            f"{total_rows} instead of "
+            f"{expected_total_rows}"
+        )
+
     if len(all_csv_ids) != len(set(all_csv_ids)):
         errors += 1
         print("Duplicate processor transaction IDs found")
+
+    if all_csv_ids.count(invalid_amount_id) != 1:
+        errors += 1
+
+        print(
+            "Invalid-amount record was not found "
+            "exactly once"
+        )
+
+    if all_csv_ids.count(invalid_timestamp_id) != 1:
+        errors += 1
+
+        print(
+            "Invalid-timestamp record was not found "
+            "exactly once"
+        )
 
     print(
         f"Monthly CSV files checked: "
@@ -1434,10 +1650,34 @@ def generate_card_transactions():
             )
 
         # --------------------------------------------------
-        # 8. Write monthly processor CSV files
+        # 8. Add controlled invalid field types
+        # --------------------------------------------------
+        (
+            dirty_monthly_processor_records,
+            invalid_type_details,
+        ) = inject_invalid_card_transaction_types(
+            monthly_processor_records,
+            amount_mismatch_details,
+            timestamp_mismatch_details,
+        )
+
+        print("\nControlled invalid card types:")
+
+        print(
+            f"Invalid amount record: "
+            f"{invalid_type_details['invalid_amount']}"
+        )
+
+        print(
+            f"Invalid timestamp record: "
+            f"{invalid_type_details['invalid_timestamp']}"
+        )
+
+        # --------------------------------------------------
+        # 9. Write monthly processor CSV files
         # --------------------------------------------------
         written_files = write_monthly_processor_csvs(
-            monthly_processor_records,
+            dirty_monthly_processor_records,
             TRANSACTION_OUTPUT_DIR,
         )
 
@@ -1447,11 +1687,12 @@ def generate_card_transactions():
         )
 
         # --------------------------------------------------
-        # 9. Verify monthly processor CSV files
+        # 10. Verify monthly processor CSV files
         # --------------------------------------------------
         monthly_csv_errors = verify_monthly_processor_csvs(
-            monthly_processor_records,
+            dirty_monthly_processor_records,
             TRANSACTION_OUTPUT_DIR,
+            invalid_type_details,
         )
 
         if monthly_csv_errors > 0:
@@ -1460,13 +1701,18 @@ def generate_card_transactions():
             )
         
         # --------------------------------------------------
-        # 10. Print reconciliation summary
+        # 11. Print reconciliation summary
         # --------------------------------------------------
+        invalid_type_count = len(
+            invalid_type_details
+        )
+
         exact_match_count = (
             len(processor_records)
             - len(missing_records)
             - len(amount_mismatch_details)
             - len(timestamp_mismatch_details)
+            - invalid_type_count
         )
 
         exact_match_rate = (
@@ -1509,6 +1755,12 @@ def generate_card_transactions():
             f"Processor-only records: "
             f"{len(processor_only_records)}"
         )
+
+        print(
+            f"Invalid-type records: "
+            f"{invalid_type_count}"
+        )
+
         print(
             f"Total processor records: "
             f"{len(all_processor_records)}"
