@@ -16,6 +16,10 @@ from src.utils.lake_paths import(
     build_lake_object_key
 )
 
+from src.metadata.lake_file_registry import(
+    register_lake_file,
+)
+
 from pathlib import Path
 
 if __name__ == "__main__":
@@ -109,3 +113,17 @@ if __name__ == "__main__":
 
     print(object_exists(test_object_key))
     print(object_exists("this/object/does/not/exist.txt"))
+
+    file_id = register_lake_file(
+        batch_id="manual",
+        zone="test",
+        object_key=test_object_key,
+        object_format="txt",
+        source_system="minio",
+        dataset_name="connection_test",
+        row_count=None,
+        file_size_bytes=test_file_path.stat().st_size,
+        record_hash=None,
+    )
+
+    print(f"Registered lake file with ID: {file_id}")
