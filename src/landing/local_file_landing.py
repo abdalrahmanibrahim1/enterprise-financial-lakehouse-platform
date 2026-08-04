@@ -45,13 +45,3 @@ def land_local_file(
     )
 
     return object_key, file_id
-
-if __name__ == "__main__":
-    result = land_local_file(
-        local_path="data/source/reference/ref_fx_rates.json",
-        source_system="reference",
-        dataset_name="fx_rates",
-        batch_id="manual_test",
-    )
-
-    print(result)
