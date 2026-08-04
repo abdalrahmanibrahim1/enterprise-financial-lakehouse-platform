@@ -3,6 +3,7 @@ from pathlib import Path
 
 import boto3
 from dotenv import load_dotenv
+from botocore.exceptions import ClientError
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 ENV_PATH = PROJECT_ROOT / ".env"
@@ -53,12 +54,18 @@ def upload_file_to_minio(local_path, object_key):
 def object_exists(object_key):
     client = get_minio_client()
     bucket_name = os.getenv("MINIO_BUCKET")
+    try:
+        client.head_object(
+            Bucket=bucket_name,
+            Key=object_key,
+        )
+    except ClientError as error:
+        status_code = error.response["ResponseMetadata"]["HTTPStatusCode"]
+        if status_code == 404:
+            return False
 
-    client.head_object(
-        Bucket=bucket_name,
-        Key=object_key,
-    )
-
+        raise
+    
     return True
 
 def download_file_from_minio(object_key, local_path):
@@ -72,3 +79,19 @@ def download_file_from_minio(object_key, local_path):
     )
 
     return local_path
+
+def list_objects(prefix):
+    client = get_minio_client()
+    bucket_name = os.getenv("MINIO_BUCKET")
+
+    response = client.list_objects_v2(
+        Bucket = bucket_name,
+        Prefix = prefix,
+    )
+
+    return[
+        object_info["Key"]
+        for object_info in response.get("Contents", [])
+    ]
+
+

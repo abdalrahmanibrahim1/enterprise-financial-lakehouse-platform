@@ -9,6 +9,7 @@ from src.connectors.minio_connector import (
     upload_file_to_minio,
     object_exists,
     download_file_from_minio,
+    list_objects,
 )
 
 from src.utils.lake_paths import(
@@ -102,3 +103,9 @@ if __name__ == "__main__":
     print(original_content == downloaded_content)
 
 
+    objects = list_objects("test/minio/")
+
+    print(f"Objects found: {objects}")
+
+    print(object_exists(test_object_key))
+    print(object_exists("this/object/does/not/exist.txt"))
