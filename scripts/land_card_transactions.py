@@ -1,10 +1,17 @@
-from pathlib import Path
 import csv
-from src.landing.local_file_landing import land_local_file
+from pathlib import Path
 from datetime import datetime
 
-transactions_dir = Path(
-    "data/source/card_processor/transactions"
+from src.landing.local_file_landing import land_local_file
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+transactions_dir = (
+    PROJECT_ROOT
+    / "data"
+    / "source"
+    / "card_processor"
+    / "transactions"
 )
 
 transaction_files = sorted(

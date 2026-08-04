@@ -1,14 +1,21 @@
+import csv
 from datetime import datetime
 from pathlib import Path
-import csv
+
 from src.landing.local_file_landing import land_local_file
 
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 if __name__ == "__main__":
     batch_id = datetime.now().strftime("%Y%m%d_%H%M%S")
 
-    cards_path = Path(
-        "data/source/card_processor/cards/cc_cards.csv"
+    cards_path = (
+        PROJECT_ROOT
+        / "data"
+        / "source"
+        / "card_processor"
+        / "cards"
+        / "cc_cards.csv"
     )
 
     with cards_path.open(
