@@ -62,7 +62,7 @@ CREATE TABLE IF NOT EXISTS metadata.lake_file_registry (
     file_id BIGSERIAL PRIMARY KEY,
     batch_id TEXT NOT NULL,
     zone TEXT NOT NULL,
-    object_path TEXT NOT NULL,
+    object_key TEXT NOT NULL,
     object_format TEXT NOT NULL,
     source_system TEXT,
     dataset_name TEXT NOT NULL,

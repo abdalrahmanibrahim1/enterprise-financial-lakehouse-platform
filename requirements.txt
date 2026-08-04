@@ -4,3 +4,4 @@ PyMySQL
 SQLAlchemy
 Faker
 requests
+boto3
