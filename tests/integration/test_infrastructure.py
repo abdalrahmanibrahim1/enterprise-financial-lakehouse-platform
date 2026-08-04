@@ -64,7 +64,7 @@ if __name__ == "__main__":
     )
 
 
-    PROJECT_ROOT = Path(__file__).resolve().parent
+    PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
     tmp_dir = PROJECT_ROOT / "tmp"
     tmp_dir.mkdir(exist_ok=True)
