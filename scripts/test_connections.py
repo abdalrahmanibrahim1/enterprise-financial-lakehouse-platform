@@ -11,6 +11,10 @@ from src.connectors.minio_connector import (
     download_file_from_minio,
 )
 
+from src.utils.lake_paths import(
+    build_lake_object_key
+)
+
 from pathlib import Path
 
 if __name__ == "__main__":
@@ -66,19 +70,29 @@ if __name__ == "__main__":
         encoding="utf-8",
     )
 
+    
+
+    test_object_key = build_lake_object_key(
+        "test",
+        "minio",
+        "connection",
+        "manual",
+        "minio_test.txt",
+    )
+
     uploaded_object_key = upload_file_to_minio(
         str(test_file_path),
-        "test/minio_test.txt",
+        test_object_key,
     )
 
     print(f"Uploaded MinIO object: {uploaded_object_key}")
 
-    exists = object_exists("test/minio_test.txt")
+    exists = object_exists(test_object_key)
     print(f"Uploaded object exists: {exists}")
 
     downloaded_file_path = tmp_dir /"minio_test_downloaded.txt"
     download_file_from_minio(
-        "test/minio_test.txt",
+        test_object_key,
         downloaded_file_path
     )
 
@@ -86,3 +100,5 @@ if __name__ == "__main__":
     downloaded_content = downloaded_file_path.read_text(encoding="utf-8")
 
     print(original_content == downloaded_content)
+
+
