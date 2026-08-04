@@ -1,14 +1,15 @@
-from src.utils.lake_paths import build_lake_object_key
+from pathlib import Path
+
 from src.connectors.minio_connector import upload_file_to_minio
 from src.metadata.lake_file_registry import register_lake_file
-
-from pathlib import Path
+from src.utils.lake_paths import build_lake_object_key
 
 def land_local_file(
     local_path,
     source_system,
     dataset_name,
     batch_id,
+    row_count = None
 ):
   
     file_path = Path(local_path)
@@ -39,7 +40,7 @@ def land_local_file(
         object_format=object_format,
         source_system=source_system,
         dataset_name=dataset_name,
-        row_count=None,
+        row_count=row_count,
         file_size_bytes=file_path.stat().st_size,
         record_hash=None,
     )
