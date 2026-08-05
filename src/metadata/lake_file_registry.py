@@ -9,7 +9,7 @@ def register_lake_file(
     dataset_name,
     row_count=None,
     file_size_bytes=None,
-    record_hash=None,
+    content_hash=None,
 ):
     conn = None
     cursor = None
@@ -27,7 +27,7 @@ def register_lake_file(
                 dataset_name,
                 row_count,
                 file_size_bytes,
-                record_hash
+                content_hash
             )
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
             RETURNING file_id
@@ -44,7 +44,7 @@ def register_lake_file(
                 dataset_name,
                 row_count,
                 file_size_bytes,
-                record_hash,
+                content_hash,
             ),
         )
 

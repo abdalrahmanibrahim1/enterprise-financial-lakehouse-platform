@@ -123,7 +123,7 @@ if __name__ == "__main__":
         dataset_name="connection_test",
         row_count=None,
         file_size_bytes=test_file_path.stat().st_size,
-        record_hash=None,
+        content_hash=None,
     )
 
     print(f"Registered lake file with ID: {file_id}")
