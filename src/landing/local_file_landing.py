@@ -3,6 +3,7 @@ from pathlib import Path
 from src.connectors.minio_connector import upload_file_to_minio
 from src.metadata.lake_file_registry import register_lake_file
 from src.utils.lake_paths import build_lake_object_key
+from src.utils.file_hashing import calculate_content_hash
 
 def land_local_file(
     local_path,
@@ -19,6 +20,7 @@ def land_local_file(
 
     filename = file_path.name
     object_format = file_path.suffix.lstrip(".")
+    content_hash = calculate_content_hash(file_path)
 
     object_key = build_lake_object_key(
         "landing",
@@ -42,7 +44,7 @@ def land_local_file(
         dataset_name=dataset_name,
         row_count=row_count,
         file_size_bytes=file_path.stat().st_size,
-        record_hash=None,
+        content_hash=content_hash,
     )
 
     return object_key, file_id

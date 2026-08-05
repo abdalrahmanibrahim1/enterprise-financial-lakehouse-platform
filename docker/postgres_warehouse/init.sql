@@ -68,7 +68,7 @@ CREATE TABLE IF NOT EXISTS metadata.lake_file_registry (
     dataset_name TEXT NOT NULL,
     row_count INTEGER,
     file_size_bytes BIGINT,
-    record_hash TEXT,
+    content_hash TEXT,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
