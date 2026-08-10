@@ -1,18 +1,27 @@
 from pathlib import Path
 from datetime import datetime
 
-from src.landing.local_file_landing import land_local_file
-from src.utils.csv_utils import write_rows_to_csv
-from src.metadata.pipeline_watermarks import deserialize_watermark
 from src.connectors.postgres_connector import (
     get_core_connection,
     get_warehouse_connection,
 )
-from src.metadata.pipeline_watermarks import get_watermark
+from src.landing.local_file_landing import land_local_file
 from src.metadata.pipeline_watermarks import (
+    deserialize_watermark,
     get_watermark,
     serialize_watermark,
     upsert_watermark,
+)
+from src.utils.csv_utils import write_rows_to_csv
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+LANDING_CSV_PATH = (
+    PROJECT_ROOT
+    / "tmp"
+    / "landing"
+    / "core"
+    / "core_transactions.csv"
 )
 
 def fetch_core_transactions(cursor, watermark_value):
@@ -73,10 +82,10 @@ if __name__ == "__main__":
             output_path = write_rows_to_csv(
                 column_names,
                 transactions,
-                "tmp/landing/core_incremental/core_transactions.csv",
+                LANDING_CSV_PATH,
             )
 
-            print(f"Incremental CSV: {output_path}")
+            print(f"Landing CSV: {output_path}")
 
             batch_id = datetime.now().strftime("%Y%m%d_%H%M%S")
 
