@@ -1,10 +1,9 @@
-import csv
 from pathlib import Path
 from datetime import datetime
 
 from src.landing.local_file_landing import land_local_file
 from src.connectors.postgres_connector import get_core_connection
-
+from src.utils.csv_utils import write_rows_to_csv
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -15,7 +14,8 @@ def identify_tables(cursor):
         SELECT table_name
         FROM information_schema.tables
         WHERE table_schema = 'public'
-        AND table_type = 'BASE TABLE'
+            AND table_type = 'BASE TABLE'
+            AND table_name <> 'core_transactions'
         ORDER BY table_name;
     """
     cursor.execute(query)
@@ -40,17 +40,11 @@ def read_table(cursor, table_name):
 def export_table_to_csv(cursor, table_name, output_path):
     column_names, rows = read_table(cursor, table_name)
 
-    output_path = Path(output_path)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-
-    with output_path.open(
-        mode="w",
-        encoding="utf-8",
-        newline="",
-    ) as csv_file:
-        writer = csv.writer(csv_file)
-        writer.writerow(column_names)
-        writer.writerows(rows)
+    output_path = write_rows_to_csv(
+        column_names,
+        rows,
+        output_path,
+    )
 
     return output_path, len(rows)
 
