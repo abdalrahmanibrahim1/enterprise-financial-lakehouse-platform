@@ -10,7 +10,8 @@ def land_local_file(
     source_system,
     dataset_name,
     batch_id,
-    row_count = None
+    row_count = None,
+    cursor = None
 ):
   
     file_path = Path(local_path)
@@ -45,6 +46,7 @@ def land_local_file(
         row_count=row_count,
         file_size_bytes=file_path.stat().st_size,
         content_hash=content_hash,
+        cursor=cursor
     )
 
     return object_key, file_id

@@ -13,6 +13,13 @@ from src.metadata.pipeline_watermarks import (
     upsert_watermark,
 )
 from src.utils.csv_utils import write_rows_to_csv
+from src.metadata.pipeline_runs import (
+    create_pipeline_run,
+    get_latest_pipeline_run,
+    mark_pipeline_run_success,
+    mark_pipeline_run_failed,
+    resume_pipeline_run,
+)
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
@@ -23,6 +30,8 @@ LANDING_CSV_PATH = (
     / "core"
     / "core_transactions.csv"
 )
+
+PIPELINE_NAME = "core_transactions_ingestion"
 
 def fetch_core_transactions(cursor, watermark_value):
     if watermark_value is None:
@@ -57,12 +66,45 @@ if __name__ == "__main__":
     warehouse_conn = None
     warehouse_cursor = None
 
+    batch_id = None
+
     try:
         core_conn = get_core_connection()
         core_cursor = core_conn.cursor()
 
         warehouse_conn = get_warehouse_connection()
         warehouse_cursor = warehouse_conn.cursor()
+
+        latest_run = get_latest_pipeline_run(
+            PIPELINE_NAME,
+            warehouse_cursor,
+        )
+
+        if latest_run is not None and latest_run[1] in ("FAILED", "STARTED"):
+            batch_id = latest_run[0]
+
+            resume_pipeline_run(
+                batch_id=batch_id,
+                cursor=warehouse_cursor,
+            )
+
+            warehouse_conn.commit()
+
+            print(f"Pipeline run resumed: {batch_id}")
+
+        else:
+            batch_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+            create_pipeline_run(
+                batch_id=batch_id,
+                pipeline_name=PIPELINE_NAME,
+                trigger_type="manual",
+                cursor=warehouse_cursor,
+            )
+
+            warehouse_conn.commit()
+
+            print(f"Pipeline run started: {batch_id}")
 
         watermark_value = get_watermark(
             "core",
@@ -78,7 +120,19 @@ if __name__ == "__main__":
         print(f"Watermark: {watermark_value}")
         print(f"Rows extracted: {len(transactions)}")
 
-        if transactions:
+        if not transactions:
+            mark_pipeline_run_success(
+                batch_id=batch_id,
+                rows_extracted=0,
+                rows_landed=0,
+                cursor=warehouse_cursor,
+            )
+
+            warehouse_conn.commit()
+
+            print(f"Pipeline run completed with no new rows: {batch_id}")
+
+        else:
             output_path = write_rows_to_csv(
                 column_names,
                 transactions,
@@ -87,16 +141,15 @@ if __name__ == "__main__":
 
             print(f"Landing CSV: {output_path}")
 
-            batch_id = datetime.now().strftime("%Y%m%d_%H%M%S")
-
             object_key, file_id = land_local_file(
                 local_path=output_path,
                 source_system="core",
                 dataset_name="transactions",
                 batch_id=batch_id,
                 row_count=len(transactions),
+                cursor=warehouse_cursor,
             )
-
+            
             print(f"Landed object: {object_key}")
             print(f"Registry file ID: {file_id}")
 
@@ -122,9 +175,33 @@ if __name__ == "__main__":
                 cursor=warehouse_cursor,
             )
 
+            mark_pipeline_run_success(
+                batch_id=batch_id,
+                rows_extracted=len(transactions),
+                rows_landed=len(transactions),
+                cursor=warehouse_cursor,
+            )
+
             warehouse_conn.commit()
 
             print(f"Watermark updated: {new_watermark_value}")
+            print(f"Pipeline run completed successfully: {batch_id}")
+
+    except Exception as exc:
+        if warehouse_conn is not None:
+            warehouse_conn.rollback()
+
+        if batch_id is not None and warehouse_cursor is not None:
+            mark_pipeline_run_failed(
+                batch_id=batch_id,
+                error_message=str(exc),
+                cursor=warehouse_cursor,
+            )
+
+            warehouse_conn.commit()
+
+        raise
+        
     finally:
         if core_cursor is not None:
             core_cursor.close()

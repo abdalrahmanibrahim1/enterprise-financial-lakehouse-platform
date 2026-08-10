@@ -103,6 +103,19 @@ def get_latest_pipeline_run(pipeline_name, cursor):
 
     return row
 
+def resume_pipeline_run(batch_id, cursor):
+    query = """
+        UPDATE metadata.pipeline_runs
+        SET
+            status = 'STARTED',
+            finished_at = NULL,
+            error_message = NULL,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE batch_id = %s;
+    """
+
+    cursor.execute(query, (batch_id,))
+
 if __name__ == "__main__":
     conn = None
     cursor = None

@@ -1,5 +1,6 @@
 from src.connectors.postgres_connector import get_warehouse_connection
 
+
 def register_lake_file(
     batch_id,
     zone,
@@ -10,12 +11,15 @@ def register_lake_file(
     row_count=None,
     file_size_bytes=None,
     content_hash=None,
+    cursor=None,
 ):
     conn = None
-    cursor = None
+    owns_connection = cursor is None
+
     try:
-        conn = get_warehouse_connection()
-        cursor = conn.cursor()
+        if owns_connection:
+            conn = get_warehouse_connection()
+            cursor = conn.cursor()
 
         query = """
             INSERT INTO metadata.lake_file_registry (
@@ -49,16 +53,22 @@ def register_lake_file(
         )
 
         file_id = cursor.fetchone()[0]
-        conn.commit()
+
+        if owns_connection:
+            conn.commit()
 
         return file_id
-    
+
     except Exception:
-        if conn is not None:
+        if owns_connection and conn is not None:
             conn.rollback()
+
         raise
+
     finally:
-        if cursor is not None:
-            cursor.close()
-        if conn is not None:
-            conn.close()   
+        if owns_connection:
+            if cursor is not None:
+                cursor.close()
+
+            if conn is not None:
+                conn.close()
