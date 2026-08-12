@@ -16,6 +16,7 @@ def identify_tables(cursor):
         WHERE table_schema = 'public'
             AND table_type = 'BASE TABLE'
             AND table_name <> 'core_transactions'
+            AND table_name <> 'core_accounts'
         ORDER BY table_name;
     """
     cursor.execute(query)
