@@ -44,7 +44,10 @@ def fetch_core_transactions(cursor, watermark_value):
         cursor.execute(query)
 
     else:
-        created_at, transaction_id = deserialize_watermark(watermark_value)
+        watermark = deserialize_watermark(watermark_value)
+
+        created_at = datetime.fromisoformat(watermark["created_at"])
+        transaction_id = watermark["transaction_id"]
 
         query = """
             SELECT *
@@ -162,8 +165,8 @@ if __name__ == "__main__":
             last_transaction_id = last_transaction[transaction_id_index]
 
             new_watermark_value = serialize_watermark(
-                last_created_at,
-                last_transaction_id,
+                created_at=last_created_at,
+                transaction_id=last_transaction_id,
             )
 
             upsert_watermark(
