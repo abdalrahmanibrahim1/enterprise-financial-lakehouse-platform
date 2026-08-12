@@ -14,6 +14,11 @@ def identify_tables(cursor):
     return [
         row[0]
         for row in cursor.fetchall()
+        if row[0] not in (
+            "crm_customers",
+            "crm_contacts",
+            "crm_customer_status_history"
+        )
     ]
 
 def read_table(cursor, table_name):
