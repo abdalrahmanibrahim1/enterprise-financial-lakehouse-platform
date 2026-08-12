@@ -72,3 +72,67 @@ def register_lake_file(
 
             if conn is not None:
                 conn.close()
+
+def get_latest_content_hash(
+    source_system,
+    dataset_name,
+    cursor
+):
+    query = """
+        SELECT content_hash
+        FROM metadata.lake_file_registry
+        WHERE source_system = %s
+            AND dataset_name = %s
+            AND zone = 'landing'
+        ORDER BY created_at DESC
+        LIMIT 1;
+    """
+
+    cursor.execute(
+        query,
+        (
+            source_system,
+            dataset_name
+        )
+    )
+
+    row = cursor.fetchone()
+
+    if row is None:
+        return None
+
+    return row[0]
+
+def get_landed_file_hashes(
+    source_system,
+    dataset_name,
+    cursor,
+):
+    query = """
+        SELECT object_key, content_hash
+        FROM metadata.lake_file_registry
+        WHERE source_system = %s
+          AND dataset_name = %s
+          AND zone = 'landing'
+        ORDER BY created_at DESC;
+    """
+
+    cursor.execute(
+        query,
+        (
+            source_system,
+            dataset_name,
+        ),
+    )
+
+    rows = cursor.fetchall()
+
+    file_hashes = {}
+
+    for object_key, content_hash in rows:
+        filename = object_key.rsplit("/", 1)[-1]
+
+        if filename not in file_hashes:
+            file_hashes[filename] = content_hash
+
+    return file_hashes
