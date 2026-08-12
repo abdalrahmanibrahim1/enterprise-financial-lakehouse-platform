@@ -57,21 +57,19 @@ def upsert_watermark(
          )
     )
 
-def serialize_watermark(created_at, transaction_id):
-    watermark = {
-        "created_at" : created_at.isoformat(),
-        "transaction_id" : transaction_id,
-    }
+def serialize_watermark(**values):
+    serialized_values = {}
 
-    return json.dumps(watermark)
+    for key, value in values.items():
+        if isinstance(value, datetime):
+            serialized_values[key] = value.isoformat()
+        else:
+            serialized_values[key] = value
+
+    return json.dumps(serialized_values)
 
 def deserialize_watermark(last_watermark_value):
-    watermark = json.loads(last_watermark_value)
-
-    created_at = datetime.fromisoformat(watermark["created_at"])
-    transaction_id = watermark["transaction_id"]
-
-    return created_at, transaction_id
+    return json.loads(last_watermark_value)
 
 if __name__ == "__main__":
     conn = None

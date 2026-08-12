@@ -6,6 +6,13 @@ from src.connectors.postgres_connector import (
     get_warehouse_connection,
 )
 from src.landing.local_file_landing import land_local_file
+from src.metadata.pipeline_runs import (
+    create_pipeline_run,
+    get_latest_pipeline_run,
+    mark_pipeline_run_failed,
+    mark_pipeline_run_success,
+    resume_pipeline_run,
+)
 from src.metadata.pipeline_watermarks import (
     deserialize_watermark,
     get_watermark,
@@ -13,52 +20,57 @@ from src.metadata.pipeline_watermarks import (
     upsert_watermark,
 )
 from src.utils.csv_utils import write_rows_to_csv
-from src.metadata.pipeline_runs import (
-    create_pipeline_run,
-    get_latest_pipeline_run,
-    mark_pipeline_run_success,
-    mark_pipeline_run_failed,
-    resume_pipeline_run,
-)
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+PIPELINE_NAME = "core_accounts_ingestion"
 
 LANDING_CSV_PATH = (
     PROJECT_ROOT
     / "tmp"
     / "landing"
     / "core"
-    / "core_transactions.csv"
+    / "core_accounts.csv"
 )
 
-PIPELINE_NAME = "core_transactions_ingestion"
-
-def fetch_core_transactions(cursor, watermark_value):
+def fetch_core_accounts(cursor, watermark_value):
     if watermark_value is None:
         query = """
             SELECT *
-            FROM core_transactions
-            ORDER BY created_at, transaction_id;
+            FROM core_accounts
+            ORDER BY updated_at, account_id;
         """
 
         cursor.execute(query)
-
     else:
         watermark = deserialize_watermark(watermark_value)
 
-        created_at = datetime.fromisoformat(watermark["created_at"])
-        transaction_id = watermark["transaction_id"]
+        updated_at = datetime.fromisoformat(
+            watermark["updated_at"]
+        )
+        account_id = watermark["account_id"]
 
         query = """
             SELECT *
-            FROM core_transactions
-            WHERE (created_at, transaction_id) > (%s, %s)
-            ORDER BY created_at, transaction_id;
+            FROM core_accounts
+            WHERE (updated_at, account_id) > (%s, %s)
+            ORDER BY updated_at, account_id;
         """
 
-        cursor.execute(query, (created_at, transaction_id))
+        cursor.execute(
+            query,
+            (
+                updated_at,
+                account_id,
+            ),
+        )
 
-    column_names = [description[0] for description in cursor.description]
+    column_names = [
+        description[0]
+        for description in cursor.description
+    ]
+
     rows = cursor.fetchall()
 
     return column_names, rows
@@ -68,7 +80,6 @@ if __name__ == "__main__":
     core_cursor = None
     warehouse_conn = None
     warehouse_cursor = None
-
     batch_id = None
 
     try:
@@ -80,15 +91,15 @@ if __name__ == "__main__":
 
         latest_run = get_latest_pipeline_run(
             PIPELINE_NAME,
-            warehouse_cursor,
+            warehouse_cursor
         )
 
         if latest_run is not None and latest_run[1] in ("FAILED", "STARTED"):
             batch_id = latest_run[0]
 
             resume_pipeline_run(
-                batch_id=batch_id,
-                cursor=warehouse_cursor,
+                batch_id = batch_id,
+                cursor= warehouse_cursor
             )
 
             warehouse_conn.commit()
@@ -102,33 +113,33 @@ if __name__ == "__main__":
                 batch_id=batch_id,
                 pipeline_name=PIPELINE_NAME,
                 trigger_type="manual",
-                cursor=warehouse_cursor,
+                cursor=warehouse_cursor
             )
 
             warehouse_conn.commit()
 
             print(f"Pipeline run started: {batch_id}")
-        print("im here")
+
         watermark_value = get_watermark(
             "core",
-            "core_transactions",
-            warehouse_cursor,
+            "core_accounts",
+            warehouse_cursor
         )
-        print(watermark_value)
-        column_names, transactions = fetch_core_transactions(
+     
+        column_names, accounts = fetch_core_accounts(
             core_cursor,
-            watermark_value,
+            watermark_value
         )
 
         print(f"Watermark: {watermark_value}")
-        print(f"Rows extracted: {len(transactions)}")
+        print(f"Rows extracted: {len(accounts)}")
 
-        if not transactions:
+        if not accounts:
             mark_pipeline_run_success(
                 batch_id=batch_id,
-                rows_extracted=0,
-                rows_landed=0,
-                cursor=warehouse_cursor,
+                rows_extracted=len(accounts),
+                rows_landed=len(accounts),
+                cursor=warehouse_cursor
             )
 
             warehouse_conn.commit()
@@ -138,51 +149,51 @@ if __name__ == "__main__":
         else:
             output_path = write_rows_to_csv(
                 column_names,
-                transactions,
-                LANDING_CSV_PATH,
+                accounts,
+                LANDING_CSV_PATH
             )
 
             print(f"Landing CSV: {output_path}")
 
             object_key, file_id = land_local_file(
+                batch_id=batch_id,
                 local_path=output_path,
                 source_system="core",
-                dataset_name="transactions",
-                batch_id=batch_id,
-                row_count=len(transactions),
-                cursor=warehouse_cursor,
+                dataset_name="accounts",
+                row_count=len(accounts),
+                cursor=warehouse_cursor
             )
-            
+
             print(f"Landed object: {object_key}")
             print(f"Registry file ID: {file_id}")
 
-            created_at_index = column_names.index("created_at")
-            transaction_id_index = column_names.index("transaction_id")
+            updated_at_index = column_names.index("updated_at")
+            accounts_id_index = column_names.index("account_id")
 
-            last_transaction = transactions[-1]
+            last_account = accounts[-1]
 
-            last_created_at = last_transaction[created_at_index]
-            last_transaction_id = last_transaction[transaction_id_index]
+            last_updated_at = last_account[updated_at_index]
+            last_account_id = last_account[accounts_id_index]
 
             new_watermark_value = serialize_watermark(
-                created_at=last_created_at,
-                transaction_id=last_transaction_id,
+                updated_at = last_updated_at,
+                account_id = last_account_id
             )
 
             upsert_watermark(
                 source_system="core",
-                source_table="core_transactions",
-                watermark_column="created_at,transaction_id",
-                last_watermark_value=new_watermark_value,
+                source_table="core_accounts",
+                watermark_column="updated_at,account_id",
+                last_watermark_value = new_watermark_value,
                 last_successful_batch=batch_id,
-                cursor=warehouse_cursor,
+                cursor=warehouse_cursor
             )
-
+            
             mark_pipeline_run_success(
                 batch_id=batch_id,
-                rows_extracted=len(transactions),
-                rows_landed=len(transactions),
-                cursor=warehouse_cursor,
+                rows_extracted=len(accounts),
+                rows_landed=len(accounts),
+                cursor=warehouse_cursor
             )
 
             warehouse_conn.commit()
@@ -204,7 +215,7 @@ if __name__ == "__main__":
             warehouse_conn.commit()
 
         raise
-        
+
     finally:
         if core_cursor is not None:
             core_cursor.close()
@@ -215,3 +226,4 @@ if __name__ == "__main__":
             warehouse_cursor.close()
         if warehouse_conn is not None:
             warehouse_conn.close()
+
