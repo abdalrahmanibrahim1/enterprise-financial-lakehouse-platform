@@ -3,7 +3,7 @@ from datetime import datetime
 
 from src.connectors.postgres_connector import (
     get_core_connection,
-    get_warehouse_connection,
+    get_metadata_connection,
 )
 from src.landing.local_file_landing import land_local_file
 from src.metadata.pipeline_runs import (
@@ -78,20 +78,20 @@ def fetch_core_accounts(cursor, watermark_value):
 if __name__ == "__main__":
     core_conn = None
     core_cursor = None
-    warehouse_conn = None
-    warehouse_cursor = None
+    metadata_conn = None
+    metadata_cursor = None
     batch_id = None
 
     try:
         core_conn = get_core_connection()
         core_cursor = core_conn.cursor()
 
-        warehouse_conn = get_warehouse_connection()
-        warehouse_cursor = warehouse_conn.cursor()
+        metadata_conn = get_metadata_connection()
+        metadata_cursor = metadata_conn.cursor()
 
         latest_run = get_latest_pipeline_run(
             PIPELINE_NAME,
-            warehouse_cursor
+            metadata_cursor
         )
 
         if latest_run is not None and latest_run[1] in ("FAILED", "STARTED"):
@@ -99,10 +99,10 @@ if __name__ == "__main__":
 
             resume_pipeline_run(
                 batch_id = batch_id,
-                cursor= warehouse_cursor
+                cursor= metadata_cursor
             )
 
-            warehouse_conn.commit()
+            metadata_conn.commit()
 
             print(f"Pipeline run resumed: {batch_id}")
 
@@ -113,17 +113,17 @@ if __name__ == "__main__":
                 batch_id=batch_id,
                 pipeline_name=PIPELINE_NAME,
                 trigger_type="manual",
-                cursor=warehouse_cursor
+                cursor=metadata_cursor
             )
 
-            warehouse_conn.commit()
+            metadata_conn.commit()
 
             print(f"Pipeline run started: {batch_id}")
 
         watermark_value = get_watermark(
             "core",
             "core_accounts",
-            warehouse_cursor
+            metadata_cursor
         )
      
         column_names, accounts = fetch_core_accounts(
@@ -139,10 +139,10 @@ if __name__ == "__main__":
                 batch_id=batch_id,
                 rows_extracted=len(accounts),
                 rows_landed=len(accounts),
-                cursor=warehouse_cursor
+                cursor=metadata_cursor
             )
 
-            warehouse_conn.commit()
+            metadata_conn.commit()
 
             print(f"Pipeline run completed with no new rows: {batch_id}")
 
@@ -161,7 +161,7 @@ if __name__ == "__main__":
                 source_system="core",
                 dataset_name="accounts",
                 row_count=len(accounts),
-                cursor=warehouse_cursor
+                cursor=metadata_cursor
             )
 
             print(f"Landed object: {object_key}")
@@ -186,33 +186,33 @@ if __name__ == "__main__":
                 watermark_column="updated_at,account_id",
                 last_watermark_value = new_watermark_value,
                 last_successful_batch=batch_id,
-                cursor=warehouse_cursor
+                cursor=metadata_cursor
             )
             
             mark_pipeline_run_success(
                 batch_id=batch_id,
                 rows_extracted=len(accounts),
                 rows_landed=len(accounts),
-                cursor=warehouse_cursor
+                cursor=metadata_cursor
             )
 
-            warehouse_conn.commit()
+            metadata_conn.commit()
 
             print(f"Watermark updated: {new_watermark_value}")
             print(f"Pipeline run completed successfully: {batch_id}")
 
     except Exception as exc:
-        if warehouse_conn is not None:
-            warehouse_conn.rollback()
+        if metadata_conn is not None:
+            metadata_conn.rollback()
 
-        if batch_id is not None and warehouse_cursor is not None:
+        if batch_id is not None and metadata_cursor is not None:
             mark_pipeline_run_failed(
                 batch_id=batch_id,
                 error_message=str(exc),
-                cursor=warehouse_cursor,
+                cursor=metadata_cursor,
             )
 
-            warehouse_conn.commit()
+            metadata_conn.commit()
 
         raise
 
@@ -222,8 +222,8 @@ if __name__ == "__main__":
         if core_conn is not None:
             core_conn.close()
 
-        if warehouse_cursor is not None:
-            warehouse_cursor.close()
-        if warehouse_conn is not None:
-            warehouse_conn.close()
+        if metadata_cursor is not None:
+            metadata_cursor.close()
+        if metadata_conn is not None:
+            metadata_conn.close()
 

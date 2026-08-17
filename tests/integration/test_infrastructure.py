@@ -1,7 +1,9 @@
+from uuid import uuid4
+
 from src.connectors.mysql_connector import get_crm_connection
 from src.connectors.postgres_connector import (
     get_core_connection,
-    get_warehouse_connection,
+    get_metadata_connection,
 )
 from src.connectors.minio_connector import (
     ensure_bucket_exists,
@@ -11,119 +13,192 @@ from src.connectors.minio_connector import (
     download_file_from_minio,
     list_objects,
 )
+from src.metadata.lake_file_registry import register_lake_file
+from src.utils.lake_paths import build_lake_object_key
 
-from src.utils.lake_paths import(
-    build_lake_object_key
-)
 
-from src.metadata.lake_file_registry import(
-    register_lake_file,
-)
-
-from pathlib import Path
-
-if __name__ == "__main__":
+def test_core_postgres_connection():
     conn = get_core_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT 1;")
-    result = cursor.fetchone()
-    print(f"Core PostgreSQL connection successful: {result}")
-    cursor.close()
-    conn.close()
 
-    conn = get_warehouse_connection()
+    try:
+        cursor.execute("SELECT 1;")
+        result = cursor.fetchone()
+
+        assert result == (1,)
+
+    finally:
+        cursor.close()
+        conn.close()
+
+
+def test_metadata_postgres_connection():
+    conn = get_metadata_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT 1;")
-    result = cursor.fetchone()
-    print(f"Warehouse PostgreSQL connection successful: {result}")
-    cursor.close()
-    conn.close()
 
+    try:
+        cursor.execute("SELECT 1;")
+        result = cursor.fetchone()
+
+        assert result == (1,)
+
+    finally:
+        cursor.close()
+        conn.close()
+
+
+def test_crm_mysql_connection():
     conn = get_crm_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT 1;")
-    result = cursor.fetchone()
-    print(f"CRM MySQL connection successful: {result}")
-    cursor.close()
-    conn.close()
 
-    minio_client = get_minio_client()
+    try:
+        cursor.execute("SELECT 1;")
+        result = cursor.fetchone()
 
+        assert result == (1,)
+
+    finally:
+        cursor.close()
+        conn.close()
+
+
+def test_minio_connection():
     ensure_bucket_exists()
 
-    response = minio_client.list_buckets()
+    client = get_minio_client()
+    response = client.list_buckets()
 
     bucket_names = [
         bucket["Name"]
         for bucket in response["Buckets"]
     ]
 
-    print(
-        f"MinIO connection successful. "
-        f"Buckets found: {bucket_names}"
-    )
+    assert len(bucket_names) > 0
 
 
-    PROJECT_ROOT = Path(__file__).resolve().parents[2]
+def test_minio_file_round_trip(tmp_path):
+    client = get_minio_client()
 
-    tmp_dir = PROJECT_ROOT / "tmp"
-    tmp_dir.mkdir(exist_ok=True)
+    bucket_name = ensure_bucket_exists()
 
-    test_file_path = tmp_dir / "minio_test.txt"
-    test_file_path.write_text(
+    test_id = uuid4().hex
+
+    local_file = tmp_path / "minio_test.txt"
+    downloaded_file = tmp_path / "minio_test_downloaded.txt"
+
+    local_file.write_text(
         "Hello from MinIO",
         encoding="utf-8",
     )
 
-    
-
-    test_object_key = build_lake_object_key(
+    object_key = build_lake_object_key(
         "test",
+        "integration",
         "minio",
-        "connection",
-        "manual",
+        test_id,
         "minio_test.txt",
     )
 
-    uploaded_object_key = upload_file_to_minio(
-        str(test_file_path),
-        test_object_key,
+    try:
+        uploaded_key = upload_file_to_minio(
+            str(local_file),
+            object_key,
+        )
+
+        assert uploaded_key == object_key
+        assert object_exists(object_key) is True
+
+        download_file_from_minio(
+            object_key,
+            downloaded_file,
+        )
+
+        assert downloaded_file.read_text(
+            encoding="utf-8"
+        ) == local_file.read_text(
+            encoding="utf-8"
+        )
+
+        objects = list_objects(
+            f"test/integration/minio/batch_id={test_id}/"
+        )
+
+        assert object_key in objects
+
+    finally:
+        client.delete_object(
+            Bucket=bucket_name,
+            Key=object_key,
+        )
+
+
+def test_missing_minio_object_returns_false():
+    missing_key = (
+        f"test/integration/missing/"
+        f"{uuid4().hex}.txt"
     )
 
-    print(f"Uploaded MinIO object: {uploaded_object_key}")
+    assert object_exists(missing_key) is False
 
-    exists = object_exists(test_object_key)
-    print(f"Uploaded object exists: {exists}")
 
-    downloaded_file_path = tmp_dir /"minio_test_downloaded.txt"
-    download_file_from_minio(
-        test_object_key,
-        downloaded_file_path
+def test_lake_file_registry_insert_can_rollback():
+    conn = get_metadata_connection()
+    cursor = conn.cursor()
+
+    test_id = uuid4().hex
+    batch_id = f"test_{test_id}"
+
+    object_key = build_lake_object_key(
+        "test",
+        "integration",
+        "registry",
+        batch_id,
+        "registry_test.txt",
     )
 
-    original_content = test_file_path.read_text(encoding="utf-8")
-    downloaded_content = downloaded_file_path.read_text(encoding="utf-8")
+    try:
+        file_id = register_lake_file(
+            batch_id=batch_id,
+            zone="test",
+            object_key=object_key,
+            object_format="txt",
+            source_system="integration_test",
+            dataset_name="registry_test",
+            row_count=1,
+            file_size_bytes=10,
+            content_hash="test_hash",
+            cursor=cursor,
+        )
 
-    print(original_content == downloaded_content)
+        assert file_id is not None
 
+        cursor.execute(
+            """
+            SELECT
+                batch_id,
+                zone,
+                object_key,
+                source_system,
+                dataset_name
+            FROM metadata.lake_file_registry
+            WHERE file_id = %s;
+            """,
+            (file_id,),
+        )
 
-    objects = list_objects("test/minio/")
+        row = cursor.fetchone()
 
-    print(f"Objects found: {objects}")
+        assert row == (
+            batch_id,
+            "test",
+            object_key,
+            "integration_test",
+            "registry_test",
+        )
 
-    print(object_exists(test_object_key))
-    print(object_exists("this/object/does/not/exist.txt"))
-
-    file_id = register_lake_file(
-        batch_id="manual",
-        zone="test",
-        object_key=test_object_key,
-        object_format="txt",
-        source_system="minio",
-        dataset_name="connection_test",
-        row_count=None,
-        file_size_bytes=test_file_path.stat().st_size,
-        content_hash=None,
-    )
-
-    print(f"Registered lake file with ID: {file_id}")
+    finally:
+        # register_lake_file received our cursor, so it did
+        # not commit. Rolling back removes the test row.
+        conn.rollback()
+        cursor.close()
+        conn.close()
