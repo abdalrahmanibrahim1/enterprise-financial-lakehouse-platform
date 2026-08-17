@@ -1,7 +1,4 @@
 CREATE SCHEMA IF NOT EXISTS metadata;
-CREATE SCHEMA IF NOT EXISTS bronze;
-CREATE SCHEMA IF NOT EXISTS silver;
-CREATE SCHEMA IF NOT EXISTS gold;
 
 CREATE TABLE IF NOT EXISTS metadata.pipeline_runs (
     batch_id TEXT PRIMARY KEY,
@@ -12,7 +9,6 @@ CREATE TABLE IF NOT EXISTS metadata.pipeline_runs (
     trigger_type TEXT NOT NULL,
     rows_extracted INTEGER DEFAULT 0,
     rows_landed INTEGER DEFAULT 0,
-    rows_bronze_loaded INTEGER DEFAULT 0,
     rows_silver_loaded INTEGER DEFAULT 0,
     rows_gold_loaded INTEGER DEFAULT 0,
     error_message TEXT,

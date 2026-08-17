@@ -20,11 +20,11 @@ def get_core_connection():
     )
 
 
-def get_warehouse_connection():
+def get_metadata_connection():
     return psycopg2.connect(
-        host=os.getenv("WAREHOUSE_DB_HOST"),
-        database=os.getenv("WAREHOUSE_DB_NAME"),
-        user=os.getenv("WAREHOUSE_DB_USER"),
-        password=os.getenv("WAREHOUSE_DB_PASSWORD"),
-        port=os.getenv("WAREHOUSE_DB_PORT"),
+        host=os.getenv("METADATA_DB_HOST"),
+        database=os.getenv("METADATA_DB_NAME"),
+        user=os.getenv("METADATA_DB_USER"),
+        password=os.getenv("METADATA_DB_PASSWORD"),
+        port=os.getenv("METADATA_DB_PORT"),
     )

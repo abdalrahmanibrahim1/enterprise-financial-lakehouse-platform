@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from src.connectors.postgres_connector import get_warehouse_connection
+from src.connectors.postgres_connector import get_metadata_connection
 
 def create_pipeline_run(
     batch_id,
@@ -121,7 +121,7 @@ if __name__ == "__main__":
     cursor = None
 
     try:
-        conn = get_warehouse_connection()
+        conn = get_metadata_connection()
         cursor = conn.cursor()
 
         batch_id, status = get_latest_pipeline_run("core_transactions_ingestion", cursor)

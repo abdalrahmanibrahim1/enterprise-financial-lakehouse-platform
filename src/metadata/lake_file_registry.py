@@ -1,4 +1,4 @@
-from src.connectors.postgres_connector import get_warehouse_connection
+from src.connectors.postgres_connector import get_metadata_connection
 
 
 def register_lake_file(
@@ -18,7 +18,7 @@ def register_lake_file(
 
     try:
         if owns_connection:
-            conn = get_warehouse_connection()
+            conn = get_metadata_connection()
             cursor = conn.cursor()
 
         query = """

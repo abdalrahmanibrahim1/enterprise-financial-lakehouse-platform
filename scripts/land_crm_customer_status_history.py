@@ -2,7 +2,7 @@ from pathlib import Path
 from datetime import datetime
 
 from src.connectors.mysql_connector import get_crm_connection
-from src.connectors.postgres_connector import get_warehouse_connection
+from src.connectors.postgres_connector import get_metadata_connection
 
 from src.landing.local_file_landing import land_local_file
 
@@ -91,8 +91,8 @@ if __name__ == "__main__":
     crm_conn = None
     crm_cursor = None
 
-    warehouse_conn = None
-    warehouse_cursor = None
+    metadata_conn = None
+    metadata_cursor = None
 
     batch_id = None
 
@@ -100,12 +100,12 @@ if __name__ == "__main__":
         crm_conn = get_crm_connection()
         crm_cursor = crm_conn.cursor()
 
-        warehouse_conn = get_warehouse_connection()
-        warehouse_cursor = warehouse_conn.cursor()
+        metadata_conn = get_metadata_connection()
+        metadata_cursor = metadata_conn.cursor()
 
         latest_run = get_latest_pipeline_run(
             PIPELINE_NAME,
-            warehouse_cursor,
+            metadata_cursor,
         )
 
         if (
@@ -116,10 +116,10 @@ if __name__ == "__main__":
 
             resume_pipeline_run(
                 batch_id=batch_id,
-                cursor=warehouse_cursor,
+                cursor=metadata_cursor,
             )
 
-            warehouse_conn.commit()
+            metadata_conn.commit()
 
             print(
                 f"Pipeline run resumed: {batch_id}"
@@ -134,10 +134,10 @@ if __name__ == "__main__":
                 batch_id=batch_id,
                 pipeline_name=PIPELINE_NAME,
                 trigger_type="manual",
-                cursor=warehouse_cursor,
+                cursor=metadata_cursor,
             )
 
-            warehouse_conn.commit()
+            metadata_conn.commit()
 
             print(
                 f"Pipeline run started: {batch_id}"
@@ -146,7 +146,7 @@ if __name__ == "__main__":
         watermark_value = get_watermark(
             source_system="crm",
             source_table="crm_customer_status_history",
-            cursor=warehouse_cursor,
+            cursor=metadata_cursor,
         )
 
         (
@@ -168,10 +168,10 @@ if __name__ == "__main__":
                 batch_id=batch_id,
                 rows_extracted=0,
                 rows_landed=0,
-                cursor=warehouse_cursor,
+                cursor=metadata_cursor,
             )
 
-            warehouse_conn.commit()
+            metadata_conn.commit()
 
             print(
                 f"Pipeline run completed with no new rows: "
@@ -195,7 +195,7 @@ if __name__ == "__main__":
                 dataset_name="customer_status_history",
                 batch_id=batch_id,
                 row_count=len(status_history_rows),
-                cursor=warehouse_cursor,
+                cursor=metadata_cursor,
             )
 
             print(
@@ -250,7 +250,7 @@ if __name__ == "__main__":
                     new_watermark_value
                 ),
                 last_successful_batch=batch_id,
-                cursor=warehouse_cursor,
+                cursor=metadata_cursor,
             )
 
             mark_pipeline_run_success(
@@ -261,10 +261,10 @@ if __name__ == "__main__":
                 rows_landed=(
                     len(status_history_rows)
                 ),
-                cursor=warehouse_cursor,
+                cursor=metadata_cursor,
             )
 
-            warehouse_conn.commit()
+            metadata_conn.commit()
 
             print(
                 f"Watermark updated: "
@@ -276,21 +276,21 @@ if __name__ == "__main__":
             )
 
     except Exception as exc:
-        if warehouse_conn is not None:
-            warehouse_conn.rollback()
+        if metadata_conn is not None:
+            metadata_conn.rollback()
 
         if (
             batch_id is not None
-            and warehouse_cursor is not None
-            and warehouse_conn is not None
+            and metadata_cursor is not None
+            and metadata_conn is not None
         ):
             mark_pipeline_run_failed(
                 batch_id=batch_id,
                 error_message=str(exc),
-                cursor=warehouse_cursor,
+                cursor=metadata_cursor,
             )
 
-            warehouse_conn.commit()
+            metadata_conn.commit()
 
         raise
 
@@ -301,8 +301,8 @@ if __name__ == "__main__":
         if crm_conn is not None:
             crm_conn.close()
 
-        if warehouse_cursor is not None:
-            warehouse_cursor.close()
+        if metadata_cursor is not None:
+            metadata_cursor.close()
 
-        if warehouse_conn is not None:
-            warehouse_conn.close()
+        if metadata_conn is not None:
+            metadata_conn.close()

@@ -3,7 +3,7 @@ from pathlib import Path
 from datetime import datetime
 
 from src.landing.local_file_landing import land_local_file
-from src.connectors.postgres_connector import get_warehouse_connection
+from src.connectors.postgres_connector import get_metadata_connection
 from src.metadata.lake_file_registry import get_landed_file_hashes
 from src.utils.file_hashing import calculate_content_hash
 
@@ -22,17 +22,17 @@ transaction_files = sorted(
 )
 
 if __name__ == "__main__":
-    warehouse_conn = None
-    warehouse_cursor = None
+    metadata_conn = None
+    metadata_cursor = None
     batch_id = datetime.now().strftime("%Y%m%d_%H%M%S")
     try:
-        warehouse_conn = get_warehouse_connection()
-        warehouse_cursor = warehouse_conn.cursor()
+        metadata_conn = get_metadata_connection()
+        metadata_cursor = metadata_conn.cursor()
 
         landed_hashes = get_landed_file_hashes(
             source_system="card_processor",
             dataset_name="transactions",
-            cursor=warehouse_cursor,
+            cursor=metadata_cursor,
         )
 
         for file_path in transaction_files:
@@ -67,8 +67,8 @@ if __name__ == "__main__":
             print(f"Registry file ID: {file_id}")
 
     finally:
-        if warehouse_cursor is not None:
-            warehouse_cursor.close()
+        if metadata_cursor is not None:
+            metadata_cursor.close()
 
-        if warehouse_conn is not None:
-            warehouse_conn.close()
+        if metadata_conn is not None:
+            metadata_conn.close()

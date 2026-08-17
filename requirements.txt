@@ -5,3 +5,4 @@ SQLAlchemy
 Faker
 requests
 boto3
+pytest

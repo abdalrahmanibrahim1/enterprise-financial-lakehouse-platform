@@ -26,18 +26,18 @@ services:
       - postgres_core_data:/var/lib/postgresql/data
       - ./docker/postgres_core/init.sql:/docker-entrypoint-initdb.d/init.sql
 
-  postgres_warehouse:
+  postgres_metadata:
     image: postgres:16
-    container_name: postgres_warehouse
+    container_name: postgres_metadata
     environment:
-      POSTGRES_DB: warehouse
-      POSTGRES_USER: warehouse_user
-      POSTGRES_PASSWORD: warehouse_password
+      POSTGRES_DB: metadata
+      POSTGRES_USER: metadata_user
+      POSTGRES_PASSWORD: metadata_password
     ports:
       - "5435:5432"
     volumes:
-      - postgres_warehouse_data:/var/lib/postgresql/data
-      - ./docker/postgres_warehouse/init.sql:/docker-entrypoint-initdb.d/init.sql
+      - postgres_metadata_data:/var/lib/postgresql/data
+      - ./docker/postgres_metadata/init.sql:/docker-entrypoint-initdb.d/init.sql
 
   minio:
     image: minio/minio
@@ -55,5 +55,5 @@ services:
 volumes:
   mysql_crm_data:
   postgres_core_data:
-  postgres_warehouse_data:
+  postgres_metadata_data:
   minio_data:

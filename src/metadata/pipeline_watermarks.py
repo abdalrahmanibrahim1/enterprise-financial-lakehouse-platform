@@ -1,7 +1,7 @@
 import json
 from datetime import datetime
 
-from src.connectors.postgres_connector import get_warehouse_connection
+from src.connectors.postgres_connector import get_metadata_connection
 
 def get_watermark(source_system, source_table, cursor):
     query = """
@@ -76,7 +76,7 @@ if __name__ == "__main__":
     cursor = None
 
     try:
-        conn = get_warehouse_connection()
+        conn = get_metadata_connection()
         cursor = conn.cursor()
 
         source_system = "core"

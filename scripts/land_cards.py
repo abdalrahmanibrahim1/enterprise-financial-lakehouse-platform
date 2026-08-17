@@ -2,7 +2,7 @@ import csv
 from datetime import datetime
 from pathlib import Path
 
-from src.connectors.postgres_connector import get_warehouse_connection
+from src.connectors.postgres_connector import get_metadata_connection
 from src.landing.local_file_landing import land_local_file
 from src.metadata.lake_file_registry import get_latest_content_hash
 from src.utils.file_hashing import calculate_content_hash
@@ -12,8 +12,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
 if __name__ == "__main__":
-    warehouse_conn = None
-    warehouse_cursor = None
+    metadata_conn = None
+    metadata_cursor = None
 
     try:
         cards_path = (
@@ -25,15 +25,15 @@ if __name__ == "__main__":
             / "cc_cards.csv"
         )
 
-        warehouse_conn = get_warehouse_connection()
-        warehouse_cursor = warehouse_conn.cursor()
+        metadata_conn = get_metadata_connection()
+        metadata_cursor = metadata_conn.cursor()
 
         current_hash = calculate_content_hash(cards_path)
 
         latest_hash = get_latest_content_hash(
             source_system="card_processor",
             dataset_name="cards",
-            cursor=warehouse_cursor,
+            cursor=metadata_cursor,
         )
 
         print(f"Current content hash: {current_hash}")
@@ -69,8 +69,8 @@ if __name__ == "__main__":
             print(f"Registry file ID: {file_id}")
 
     finally:
-        if warehouse_cursor is not None:
-            warehouse_cursor.close()
+        if metadata_cursor is not None:
+            metadata_cursor.close()
 
-        if warehouse_conn is not None:
-            warehouse_conn.close()
+        if metadata_conn is not None:
+            metadata_conn.close()

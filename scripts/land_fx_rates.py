@@ -4,18 +4,18 @@ import json
 
 from src.landing.local_file_landing import land_local_file
 from src.metadata.lake_file_registry import get_latest_content_hash
-from src.connectors.postgres_connector import get_warehouse_connection
+from src.connectors.postgres_connector import get_metadata_connection
 from src.utils.file_hashing import calculate_content_hash
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 if __name__ == "__main__":
-    warehouse_conn = None
-    warehouse_cursor = None
+    metadata_conn = None
+    metadata_cursor = None
 
     try:
-        warehouse_conn = get_warehouse_connection()
-        warehouse_cursor = warehouse_conn.cursor()
+        metadata_conn = get_metadata_connection()
+        metadata_cursor = metadata_conn.cursor()
 
         fx_path = (
             PROJECT_ROOT
@@ -30,7 +30,7 @@ if __name__ == "__main__":
         latest_hash = get_latest_content_hash(
             source_system="reference",
             dataset_name="fx_rates",
-            cursor=warehouse_cursor,
+            cursor=metadata_cursor,
         )
 
         if current_hash == latest_hash:
@@ -59,8 +59,8 @@ if __name__ == "__main__":
             print(f"Registry file ID: {file_id}")
 
     finally:
-        if warehouse_cursor is not None:
-            warehouse_cursor.close()
+        if metadata_cursor is not None:
+            metadata_cursor.close()
 
-        if warehouse_conn is not None:
-            warehouse_conn.close()
+        if metadata_conn is not None:
+            metadata_conn.close()
